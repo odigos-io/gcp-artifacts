@@ -122,6 +122,20 @@ func helmInstallOdigos(config *rest.Config, namespace string, vals map[string]in
 	return nil
 }
 
+func helmUninstallOdigos(config *rest.Config, namespace string) error {
+	actionConfig := new(action.Configuration)
+	debug := func(format string, v ...interface{}) {
+		if os.Getenv("ODIGOS_INSTALLER_HELM_DEBUG") != "1" {
+			return
+		}
+		fmt.Printf(format, v...)
+	}
+	if err := actionConfig.Init(newRESTClientGetter(config, namespace), namespace, "secret", debug); err != nil {
+		return err
+	}
+	return runHelmUninstall(actionConfig, helmReleaseName)
+}
+
 func buildHelmValues(details *autodetect.ClusterDetails, onPremToken, imageTag string, odigosTier common.OdigosTier) map[string]interface{} {
 	vals := make(map[string]interface{})
 

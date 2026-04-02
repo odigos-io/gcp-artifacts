@@ -96,6 +96,10 @@ properties:
             - apiGroups: ['operator.odigos.io']
               resources: ['*']
               verbs: ['*']
+            # Application CR (finalizer: installer watches and patches on delete)
+            - apiGroups: ['app.k8s.io']
+              resources: ['applications']
+              verbs: ['get', 'list', 'watch', 'patch', 'update']
             # Core resources
             - apiGroups: ['']
               resources: ['configmaps', 'secrets', 'services', 'serviceaccounts', 'pods', 'namespaces', 'resourcequotas', 'nodes', 'endpoints', 'events']

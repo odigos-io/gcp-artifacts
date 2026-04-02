@@ -27,7 +27,7 @@ COPY --from=chart /out/odigos-chart.tgz ./odigos-chart.tgz
 COPY go.mod go.sum ./
 RUN go mod download
 
-COPY main.go helm_install.go helm_actions.go ./
+COPY main.go helm_install.go helm_actions.go application_finalizer.go ./
 
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -o installer .
 

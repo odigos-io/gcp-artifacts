@@ -73,3 +73,22 @@ func formatInstallOutcome(result *installOrUpgradeResult, chartVer string) strin
 	return fmt.Sprintf("Upgraded release %q in namespace %q (chart version: %s)",
 		result.Release.Name, result.Release.Namespace, chartVer)
 }
+
+// runHelmUninstall removes the Helm release (aligned with odigos operator helm.RunUninstall).
+func runHelmUninstall(actionConfig *action.Configuration, releaseName string) error {
+	uninstall := action.NewUninstall(actionConfig)
+	res, err := uninstall.Run(releaseName)
+	if err != nil {
+		if errors.Is(err, driver.ErrReleaseNotFound) {
+			fmt.Printf("Helm release %q not found, treating as already uninstalled\n", releaseName)
+			return nil
+		}
+		return err
+	}
+	if res == nil {
+		fmt.Printf("Helm release %q not found, treating as already uninstalled\n", releaseName)
+		return nil
+	}
+	fmt.Printf("Helm uninstall completed for release %q\n", releaseName)
+	return nil
+}

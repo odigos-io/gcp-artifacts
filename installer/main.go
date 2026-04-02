@@ -28,7 +28,8 @@ import (
 const odigletDaemonSetName = "odiglet"
 
 func main() {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	fmt.Println("Starting Odigos installer")
 
@@ -86,8 +87,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "ERROR: unable to get installer deployment %s in namespace %s after retries: %v\n", odigosInstallerName, odigosInstallerNamespace, err)
 			os.Exit(1)
 		}
-		// Helm owns its releases; marketplace previously set owner refs on raw resources via resource managers.
-		// Uninstall is handled by the deployer; no owner refs are attached here.
+		// Helm owns cluster state; Application deletion is handled via metadata.finalizers + watch in this pod.
 	}
 
 	fmt.Println("Installing Odigos via Helm chart")
@@ -98,6 +98,11 @@ func main() {
 
 	fmt.Println("Odigos installation completed successfully")
 
+	if odigosInstallerName != "" && odigosInstallerNamespace != "" && ns != "" {
+		fmt.Printf("Watching Application %s/%s for deletion (helm uninstall finalizer)\n", odigosInstallerNamespace, odigosInstallerName)
+		go watchApplicationForHelmUninstall(ctx, k8sConfig, odigosInstallerName, odigosInstallerNamespace, ns)
+	}
+
 	if ns != "" {
 		fmt.Println("Starting odiglet daemonset watcher")
 		watchOdigletDaemonSet(ctx, clientset, ns)
@@ -107,6 +112,7 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	<-sigCh
+	cancel()
 	fmt.Println("Shutdown signal received, exiting...")
 }
 
