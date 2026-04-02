@@ -15,8 +15,12 @@ spec:
   selector:
     matchLabels:
       odigos.io/system-object: "true"
+  # Inject ownerReferences to the Application on matched resources so deleting the Application
+  # can cascade via Kubernetes garbage collection. See:
+  # https://github.com/kubernetes-sigs/application/blob/master/docs/api.md
+  addOwnerRef: true
   # componentKinds must cover every resource type the Odigos Helm chart (and controllers) create
-  # with odigos.io/system-object so Application deletion can uninstall the product.
+  # with odigos.io/system-object so the Application controller can adopt them when addOwnerRef is set.
   # See https://docs.cloud.google.com/marketplace/docs/partners/kubernetes/create-app-package
   componentKinds:
   # actions.odigos.io (CRDs from chart)
