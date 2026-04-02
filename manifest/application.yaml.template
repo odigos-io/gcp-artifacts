@@ -15,10 +15,85 @@ spec:
   selector:
     matchLabels:
       odigos.io/system-object: "true"
+  # componentKinds must cover every resource type the Odigos Helm chart (and controllers) create
+  # with odigos.io/system-object so Application deletion can uninstall the product.
+  # See https://docs.cloud.google.com/marketplace/docs/partners/kubernetes/create-app-package
   componentKinds:
-  # The group is determined from the apiVersion: $GROUP_NAME/$VERSION
-  # TODO https://github.com/GoogleCloudPlatform/marketplace-k8s-app-tools/blob/master/docs/building-deployer-helm.md#application-components
+  # actions.odigos.io (CRDs from chart)
+  - group: actions.odigos.io
+    kind: AddClusterInfo
+  - group: actions.odigos.io
+    kind: DeleteAttribute
+  - group: actions.odigos.io
+    kind: ErrorSampler
+  - group: actions.odigos.io
+    kind: K8sAttributesResolver
+  - group: actions.odigos.io
+    kind: LatencySampler
+  - group: actions.odigos.io
+    kind: PiiMasking
+  - group: actions.odigos.io
+    kind: ProbabilisticSampler
+  - group: actions.odigos.io
+    kind: RenameAttribute
+  - group: actions.odigos.io
+    kind: ServiceNameSampler
+  - group: actions.odigos.io
+    kind: SpanAttributeSampler
+  # admission / webhooks
+  - group: admissionregistration.k8s.io
+    kind: MutatingWebhookConfiguration
+  - group: admissionregistration.k8s.io
+    kind: ValidatingWebhookConfiguration
+  - group: apiextensions.k8s.io
+    kind: CustomResourceDefinition
+  - group: apps
+    kind: DaemonSet
   - group: apps
     kind: Deployment
+  - group: autoscaling
+    kind: HorizontalPodAutoscaler
+  - group: batch
+    kind: Job
+  # odigos.io (CRDs + user-facing CR instances labeled as system objects)
+  - group: odigos.io
+    kind: Action
+  - group: odigos.io
+    kind: CollectorsGroup
+  - group: odigos.io
+    kind: Destination
+  - group: odigos.io
+    kind: InstrumentationConfig
+  - group: odigos.io
+    kind: InstrumentationInstance
+  - group: odigos.io
+    kind: InstrumentationRule
+  - group: odigos.io
+    kind: Processor
+  - group: odigos.io
+    kind: Sampling
+  - group: odigos.io
+    kind: Source
+  - group: policy
+    kind: PodDisruptionBudget
+  - group: rbac.authorization.k8s.io
+    kind: ClusterRole
+  - group: rbac.authorization.k8s.io
+    kind: ClusterRoleBinding
+  - group: rbac.authorization.k8s.io
+    kind: Role
+  - group: rbac.authorization.k8s.io
+    kind: RoleBinding
+  - group: storage.k8s.io
+    kind: CSIDriver
+  # core / v1
+  - group: ''
+    kind: ConfigMap
+  - group: ''
+    kind: ResourceQuota
+  - group: ''
+    kind: Secret
   - group: ''
     kind: Service
+  - group: ''
+    kind: ServiceAccount
