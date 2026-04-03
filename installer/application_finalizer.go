@@ -53,12 +53,23 @@ func applicationOwnerRefFromDeployment(dep *appsv1.Deployment) *metav1.OwnerRefe
 }
 
 func processApplicationIfStuckOnShutdown(ctx context.Context, appClient crclient.Client, k8sConfig *rest.Config, app *appv1beta1.Application, helmNamespace string) {
-	if !controllerutil.ContainsFinalizer(app, applicationFinalizer) {
-		fmt.Printf("Shutdown: Application %s/%s has no finalizer %q; skipping\n", app.Namespace, app.Name, applicationFinalizer)
+	hasFin := controllerutil.ContainsFinalizer(app, applicationFinalizer)
+	var delTS string
+	if app.DeletionTimestamp != nil {
+		delTS = app.DeletionTimestamp.String()
+	} else {
+		delTS = "<nil>"
+	}
+	fmt.Printf("Shutdown: candidate Application %s/%s uid=%s deletionTimestamp=%s hasFinalizer=%v resourceVersion=%s\n",
+		app.Namespace, app.Name, app.UID, delTS, hasFin, app.ResourceVersion)
+	if !hasFin {
+		fmt.Printf("Shutdown: Application %s/%s has no finalizer %q; nothing to do\n", app.Namespace, app.Name, applicationFinalizer)
 		return
 	}
 	if err := handleApplicationDeletion(ctx, appClient, k8sConfig, app, helmNamespace); err != nil {
 		fmt.Fprintf(os.Stderr, "ERROR: shutdown handler for %s/%s: %v\n", app.Namespace, app.Name, err)
+	} else {
+		fmt.Printf("Shutdown: handleApplicationDeletion finished OK for %s/%s\n", app.Namespace, app.Name)
 	}
 }
 
@@ -161,43 +172,49 @@ func processApplicationsWithOdigosFinalizerOnShutdown(ctx context.Context, k8sCo
 	}
 
 	if deployName == "" || deployNamespace == "" {
-		fmt.Fprintf(os.Stderr, "WARN: shutdown skip: installer Deployment name or namespace empty\n")
+		fmt.Fprintf(os.Stderr, "Shutdown: ABORT empty installer identity (deployNamespace=%q deployName=%q)\n", deployNamespace, deployName)
 		return nil
 	}
+
+	fmt.Printf("Shutdown: begin helmNamespace=%q lookup installer Deployment %s/%s\n", helmNamespace, deployNamespace, deployName)
 
 	var appKey crclient.ObjectKey
 	dep, depErr := clientset.AppsV1().Deployments(deployNamespace).Get(ctx, deployName, metav1.GetOptions{})
 	switch {
 	case depErr == nil:
-		fmt.Printf("Shutdown: installer Deployment %s/%s (uid=%s)\n", dep.Namespace, dep.Name, dep.UID)
+		fmt.Printf("Shutdown: got Deployment %s/%s uid=%s ownerRefs=%d\n", dep.Namespace, dep.Name, dep.UID, len(dep.OwnerReferences))
 		if ref := applicationOwnerRefFromDeployment(dep); ref != nil {
+			fmt.Printf("Shutdown: using Application from Deployment ownerRef name=%s uid=%s apiVersion=%s\n", ref.Name, ref.UID, ref.APIVersion)
 			appKey = crclient.ObjectKey{Namespace: dep.Namespace, Name: ref.Name}
 		} else {
-			fmt.Fprintf(os.Stderr, "WARN: Deployment %s/%s has no app.k8s.io Application ownerReference; trying Application %s/%s\n", dep.Namespace, dep.Name, deployNamespace, deployName)
+			fmt.Fprintf(os.Stderr, "Shutdown: Deployment %s/%s has no app.k8s.io Application ownerReference; fallback Application %s/%s\n", dep.Namespace, dep.Name, deployNamespace, deployName)
 			appKey = crclient.ObjectKey{Namespace: deployNamespace, Name: deployName}
 		}
 	case apierrors.IsNotFound(depErr):
-		fmt.Printf("Shutdown: installer Deployment %s/%s not found (namespace teardown?); trying Application %s/%s\n", deployNamespace, deployName, deployNamespace, deployName)
+		fmt.Printf("Shutdown: Deployment %s/%s IsNotFound — fallback Application %s/%s\n", deployNamespace, deployName, deployNamespace, deployName)
 		appKey = crclient.ObjectKey{Namespace: deployNamespace, Name: deployName}
 	default:
-		fmt.Fprintf(os.Stderr, "WARN: shutdown: get installer Deployment %s/%s: %v\n", deployNamespace, deployName, depErr)
+		fmt.Fprintf(os.Stderr, "Shutdown: ABORT get Deployment %s/%s: %T %v\n", deployNamespace, deployName, depErr, depErr)
 		return nil
 	}
 
+	fmt.Printf("Shutdown: GET Application %s/%s\n", appKey.Namespace, appKey.Name)
 	var app appv1beta1.Application
 	if err := appClient.Get(ctx, appKey, &app); err != nil {
 		if apierrors.IsNotFound(err) {
-			fmt.Fprintf(os.Stderr, "WARN: shutdown: Application %s/%s not found\n", appKey.Namespace, appKey.Name)
+			fmt.Fprintf(os.Stderr, "Shutdown: ABORT Application %s/%s IsNotFound (Deployment path may be wrong or Application already removed)\n", appKey.Namespace, appKey.Name)
 			return nil
 		}
 		return fmt.Errorf("get Application %s/%s: %w", appKey.Namespace, appKey.Name, err)
 	}
+	fmt.Printf("Shutdown: got Application %s/%s uid=%s\n", app.Namespace, app.Name, app.UID)
 	if depErr == nil {
 		if ref := applicationOwnerRefFromDeployment(dep); ref != nil && app.UID != ref.UID {
-			fmt.Fprintf(os.Stderr, "WARN: Application %s/%s UID %s != owner ref UID %s\n", app.Namespace, app.Name, app.UID, ref.UID)
+			fmt.Fprintf(os.Stderr, "Shutdown: WARN Application uid %s != ownerRef uid %s\n", app.UID, ref.UID)
 		}
 	}
 	processApplicationIfStuckOnShutdown(ctx, appClient, k8sConfig, &app, helmNamespace)
+	fmt.Printf("Shutdown: end processApplicationsWithOdigosFinalizerOnShutdown for Application %s/%s\n", appKey.Namespace, appKey.Name)
 	return nil
 }
 
@@ -206,13 +223,14 @@ func handleApplicationDeletion(ctx context.Context, appCli crclient.Client, k8sC
 		return fmt.Errorf("application is nil")
 	}
 	if app.DeletionTimestamp == nil {
-		fmt.Printf("Application %s/%s has no deletionTimestamp; skipping helm uninstall and finalizer removal\n", app.Namespace, app.Name)
+		fmt.Printf("Application hook: %s/%s has no deletionTimestamp; skip helm uninstall and finalizer removal\n", app.Namespace, app.Name)
 		return nil
 	}
-	fmt.Printf("Application %s/%s is deleting; running helm uninstall in namespace %s\n", app.Namespace, app.Name, helmNamespace)
+	fmt.Printf("Application hook: %s/%s deleting since %v — helm uninstall in namespace %q\n", app.Namespace, app.Name, app.DeletionTimestamp.Time, helmNamespace)
 	if err := helmUninstallOdigos(k8sConfig, helmNamespace); err != nil {
 		return fmt.Errorf("helm uninstall: %w", err)
 	}
+	fmt.Printf("Application hook: helm uninstall ok — patch finalizer on Application %s/%s\n", app.Namespace, app.Name)
 	return removeApplicationFinalizer(ctx, appCli, app.Namespace, app.Name)
 }
 
@@ -224,11 +242,12 @@ func removeApplicationFinalizer(ctx context.Context, appClient crclient.Client, 
 	}
 	orig := app.DeepCopy()
 	if !controllerutil.RemoveFinalizer(&app, applicationFinalizer) {
+		fmt.Printf("Application hook: finalizer %q already absent on %s/%s after refresh GET; no patch\n", applicationFinalizer, namespace, name)
 		return nil
 	}
 	if err := appClient.Patch(ctx, &app, crclient.MergeFrom(orig)); err != nil {
 		return fmt.Errorf("patch Application finalizers: %w", err)
 	}
-	fmt.Printf("Removed finalizer %q from Application %s/%s\n", applicationFinalizer, namespace, name)
+	fmt.Printf("Application hook: removed finalizer %q from Application %s/%s\n", applicationFinalizer, namespace, name)
 	return nil
 }

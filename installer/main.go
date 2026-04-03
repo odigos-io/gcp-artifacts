@@ -95,6 +95,8 @@ func main() {
 	odigosInstallerName := os.Getenv("ODIGOS_INSTALLER_NAME")
 	odigosInstallerNamespace := os.Getenv("ODIGOS_INSTALLER_NAMESPACE")
 
+	fmt.Printf("Installer env: ODIGOS_NAMESPACE=%q ODIGOS_INSTALLER_NAME=%q ODIGOS_INSTALLER_NAMESPACE=%q\n", ns, odigosInstallerName, odigosInstallerNamespace)
+
 	fmt.Println("Getting installer deployment (for owner refs on Helm-managed workloads, if configured)")
 	if odigosInstallerName != "" && odigosInstallerNamespace != "" {
 		if _, err := getDeploymentWithRetry(ctx, clientset, odigosInstallerName, odigosInstallerNamespace); err != nil {
@@ -131,19 +133,26 @@ func main() {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	<-sigCh
 
-	fmt.Println("Shutdown signal received; stopping odiglet watcher...")
+	fmt.Println("SIGTERM: received; stopping odiglet side watcher...")
 	daemonCancel()
 
 	if odigosInstallerNamespace != "" && odigosInstallerName != "" && ns != "" {
 		shutdownTimeout := shutdownFinalizerTimeout()
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), shutdownTimeout)
-		fmt.Printf("SIGTERM: Application cleanup via Deployment→Application owner ref (%q, Deployment %s/%s, timeout %v)...\n", applicationFinalizer, odigosInstallerNamespace, odigosInstallerName, shutdownTimeout)
+		fmt.Printf("SIGTERM: running Application finalizer drain (finalizer=%q installerDeploy=%s/%s helmNs=%q timeout=%v)\n",
+			applicationFinalizer, odigosInstallerNamespace, odigosInstallerName, ns, shutdownTimeout)
 		if err := processApplicationsWithOdigosFinalizerOnShutdown(shutdownCtx, k8sConfig, clientset, odigosInstallerNamespace, odigosInstallerName, ns); err != nil {
-			fmt.Fprintf(os.Stderr, "WARN: Application cleanup on shutdown: %v\n", err)
+			fmt.Fprintf(os.Stderr, "SIGTERM: Application cleanup returned error: %v\n", err)
+		} else {
+			fmt.Println("SIGTERM: Application cleanup handler returned without error (see Shutdown:* lines above for actual work: helm uninstall / finalizer patch may have been skipped)")
 		}
 		shutdownCancel()
+	} else {
+		fmt.Printf("SIGTERM: Application finalizer drain SKIPPED — need all of ODIGOS_INSTALLER_NAMESPACE (%q), ODIGOS_INSTALLER_NAME (%q), ODIGOS_NAMESPACE (%q) non-empty\n",
+			odigosInstallerNamespace, odigosInstallerName, ns)
 	}
 
+	fmt.Println("SIGTERM: cancelling Application informer goroutine...")
 	watchCancel()
 	fmt.Println("Exiting")
 }
