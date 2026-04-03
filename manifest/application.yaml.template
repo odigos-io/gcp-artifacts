@@ -3,7 +3,7 @@ kind: Application
 metadata:
   name: "$name"
   namespace: "$namespace"
-  # Uninstall: (1) informer on Application delete. (2) SIGTERM — Application from GCP ownerReference on installer Deployment (ODIGOS_INSTALLER_NAME/NAMESPACE).
+  # Uninstall: (1) informer on Application delete. (2) SIGTERM — Deployment owner ref to Application, or same name/ns as installer if Deployment already deleted (namespace teardown).
   finalizers:
     - odigos.io/gcp-marketplace-helm-uninstall
   annotations:

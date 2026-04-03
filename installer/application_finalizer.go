@@ -9,6 +9,7 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -149,9 +150,10 @@ func applicationFromInformerObject(obj interface{}) (*appv1beta1.Application, bo
 	return app, true
 }
 
-// processApplicationsWithOdigosFinalizerOnShutdown loads the installer Deployment by deployNamespace/deployName
-// (ODIGOS_INSTALLER_NAMESPACE / ODIGOS_INSTALLER_NAME), reads the Application ownerReference GCP sets on that
-// Deployment, and processes that Application if it still has applicationFinalizer.
+// processApplicationsWithOdigosFinalizerOnShutdown resolves the Marketplace Application for SIGTERM cleanup:
+// prefer installer Deployment (ODIGOS_INSTALLER_NAMESPACE / ODIGOS_INSTALLER_NAME) and its Application
+// ownerReference; if the Deployment is already gone (common during namespace deletion), fall back to Application
+// with the same name/namespace as the installer (matches application.yaml.template / manifests).
 func processApplicationsWithOdigosFinalizerOnShutdown(ctx context.Context, k8sConfig *rest.Config, clientset kubernetes.Interface, deployNamespace, deployName, helmNamespace string) error {
 	appClient, err := applicationClient(k8sConfig)
 	if err != nil {
@@ -163,26 +165,37 @@ func processApplicationsWithOdigosFinalizerOnShutdown(ctx context.Context, k8sCo
 		return nil
 	}
 
-	dep, err := clientset.AppsV1().Deployments(deployNamespace).Get(ctx, deployName, metav1.GetOptions{})
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "WARN: shutdown skip: get installer Deployment %s/%s: %v\n", deployNamespace, deployName, err)
-		return nil
-	}
-
-	fmt.Printf("Shutdown: installer Deployment %s/%s (uid=%s)\n", dep.Namespace, dep.Name, dep.UID)
-	ref := applicationOwnerRefFromDeployment(dep)
-	if ref == nil {
-		fmt.Fprintf(os.Stderr, "WARN: shutdown skip: Deployment %s/%s has no app.k8s.io Application ownerReference\n", dep.Namespace, dep.Name)
+	var appKey crclient.ObjectKey
+	dep, depErr := clientset.AppsV1().Deployments(deployNamespace).Get(ctx, deployName, metav1.GetOptions{})
+	switch {
+	case depErr == nil:
+		fmt.Printf("Shutdown: installer Deployment %s/%s (uid=%s)\n", dep.Namespace, dep.Name, dep.UID)
+		if ref := applicationOwnerRefFromDeployment(dep); ref != nil {
+			appKey = crclient.ObjectKey{Namespace: dep.Namespace, Name: ref.Name}
+		} else {
+			fmt.Fprintf(os.Stderr, "WARN: Deployment %s/%s has no app.k8s.io Application ownerReference; trying Application %s/%s\n", dep.Namespace, dep.Name, deployNamespace, deployName)
+			appKey = crclient.ObjectKey{Namespace: deployNamespace, Name: deployName}
+		}
+	case apierrors.IsNotFound(depErr):
+		fmt.Printf("Shutdown: installer Deployment %s/%s not found (namespace teardown?); trying Application %s/%s\n", deployNamespace, deployName, deployNamespace, deployName)
+		appKey = crclient.ObjectKey{Namespace: deployNamespace, Name: deployName}
+	default:
+		fmt.Fprintf(os.Stderr, "WARN: shutdown: get installer Deployment %s/%s: %v\n", deployNamespace, deployName, depErr)
 		return nil
 	}
 
 	var app appv1beta1.Application
-	key := crclient.ObjectKey{Namespace: dep.Namespace, Name: ref.Name}
-	if err := appClient.Get(ctx, key, &app); err != nil {
-		return fmt.Errorf("get Application %s/%s from Deployment owner ref: %w", dep.Namespace, ref.Name, err)
+	if err := appClient.Get(ctx, appKey, &app); err != nil {
+		if apierrors.IsNotFound(err) {
+			fmt.Fprintf(os.Stderr, "WARN: shutdown: Application %s/%s not found\n", appKey.Namespace, appKey.Name)
+			return nil
+		}
+		return fmt.Errorf("get Application %s/%s: %w", appKey.Namespace, appKey.Name, err)
 	}
-	if app.UID != ref.UID {
-		fmt.Fprintf(os.Stderr, "WARN: Application %s/%s UID %s != owner ref UID %s\n", app.Namespace, app.Name, app.UID, ref.UID)
+	if depErr == nil {
+		if ref := applicationOwnerRefFromDeployment(dep); ref != nil && app.UID != ref.UID {
+			fmt.Fprintf(os.Stderr, "WARN: Application %s/%s UID %s != owner ref UID %s\n", app.Namespace, app.Name, app.UID, ref.UID)
+		}
 	}
 	processApplicationIfStuckOnShutdown(ctx, appClient, k8sConfig, &app, helmNamespace)
 	return nil
