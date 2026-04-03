@@ -8,13 +8,17 @@ import (
 	"sync"
 	"time"
 
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/dynamic"
+	dynamicinformer "k8s.io/client-go/dynamic/dynamicinformer"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/cache"
+
+	appv1beta1 "sigs.k8s.io/application/api/v1beta1"
 )
 
 // applicationFinalizer blocks Application deletion until the installer runs helm uninstall
@@ -27,60 +31,73 @@ var applicationGVR = schema.GroupVersionResource{
 	Resource: "applications",
 }
 
-// watchApplicationForHelmUninstall watches the Marketplace Application; when it is deleted,
+// watchApplicationForHelmUninstall watches the Marketplace Application via a SharedInformer; when it is deleted,
 // runs helm uninstall for the Odigos release then removes this finalizer.
+//
+// sigs.k8s.io/application publishes API types (api/v1beta1) but not a generated clientset/informers package like
+// k8s.io/client-go/kubernetes. The usual pattern is dynamic client + dynamicinformer (ListWatch under the hood).
 func watchApplicationForHelmUninstall(ctx context.Context, k8sConfig *rest.Config, appName, appNamespace, helmNamespace string) {
 	dyn, err := dynamic.NewForConfig(k8sConfig)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "ERROR: dynamic client for Application watch: %v\n", err)
+		fmt.Fprintf(os.Stderr, "ERROR: dynamic client for Application informer: %v\n", err)
 		return
 	}
 
+	factory := dynamicinformer.NewFilteredDynamicSharedInformerFactory(dyn, 6*time.Minute, appNamespace, nil)
+	informer := factory.ForResource(applicationGVR).Informer()
+
 	var mu sync.Mutex
-	for ctx.Err() == nil {
-		w, err := dyn.Resource(applicationGVR).Namespace(appNamespace).Watch(ctx, metav1.ListOptions{})
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Application watch failed (retrying): %v\n", err)
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(5 * time.Second):
-			}
-			continue
+	process := func(obj interface{}) {
+		if ctx.Err() != nil {
+			return
 		}
-
-		func() {
-			defer w.Stop()
-			for e := range w.ResultChan() {
-				if ctx.Err() != nil {
-					return
-				}
-				if e.Type == watch.Error {
-					continue
-				}
-				acc, err := meta.Accessor(e.Object)
-				if err != nil {
-					continue
-				}
-				if acc.GetName() != appName {
-					continue
-				}
-				if acc.GetDeletionTimestamp() == nil {
-					continue
-				}
-				if !containsString(acc.GetFinalizers(), applicationFinalizer) {
-					continue
-				}
-
-				mu.Lock()
-				err = handleApplicationDeletion(ctx, dyn, k8sConfig, appName, appNamespace, helmNamespace)
-				mu.Unlock()
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "ERROR: Application deletion hook: %v (will retry on next event)\n", err)
-				}
-			}
-		}()
+		app, ok := applicationFromInformerObject(obj)
+		if !ok || app.Name != appName {
+			return
+		}
+		if app.DeletionTimestamp == nil || !containsString(app.Finalizers, applicationFinalizer) {
+			return
+		}
+		mu.Lock()
+		err := handleApplicationDeletion(ctx, dyn, k8sConfig, appName, appNamespace, helmNamespace)
+		mu.Unlock()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "ERROR: Application deletion hook: %v (will retry on resync)\n", err)
+		}
 	}
+
+	informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc:    process,
+		UpdateFunc: func(_, newObj interface{}) { process(newObj) },
+	})
+
+	factory.Start(ctx.Done())
+	if !cache.WaitForCacheSync(ctx.Done(), informer.HasSynced) {
+		fmt.Fprintf(os.Stderr, "ERROR: Application informer cache sync failed\n")
+		return
+	}
+	fmt.Println("Application informer synced (app.k8s.io/v1beta1)")
+
+	<-ctx.Done()
+}
+
+func applicationFromInformerObject(obj interface{}) (*appv1beta1.Application, bool) {
+	u, ok := obj.(*unstructured.Unstructured)
+	if !ok {
+		tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
+		if !ok {
+			return nil, false
+		}
+		u, ok = tombstone.Obj.(*unstructured.Unstructured)
+		if !ok {
+			return nil, false
+		}
+	}
+	var app appv1beta1.Application
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &app); err != nil {
+		return nil, false
+	}
+	return &app, true
 }
 
 func handleApplicationDeletion(ctx context.Context, dyn dynamic.Interface, k8sConfig *rest.Config, appName, appNamespace, helmNamespace string) error {

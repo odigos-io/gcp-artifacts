@@ -81,15 +81,6 @@ func main() {
 	odigosInstallerName := os.Getenv("ODIGOS_INSTALLER_NAME")
 	odigosInstallerNamespace := os.Getenv("ODIGOS_INSTALLER_NAMESPACE")
 
-	fmt.Println("Getting installer deployment (for owner refs on Helm-managed workloads, if configured)")
-	if odigosInstallerName != "" && odigosInstallerNamespace != "" {
-		if _, err := getDeploymentWithRetry(ctx, clientset, odigosInstallerName, odigosInstallerNamespace); err != nil {
-			fmt.Fprintf(os.Stderr, "ERROR: unable to get installer deployment %s in namespace %s after retries: %v\n", odigosInstallerName, odigosInstallerNamespace, err)
-			os.Exit(1)
-		}
-		// Helm owns cluster state; Application deletion is handled via metadata.finalizers + watch in this pod.
-	}
-
 	fmt.Println("Installing Odigos via Helm chart")
 	if err := helmInstallOdigos(k8sConfig, ns, vals); err != nil {
 		fmt.Fprintf(os.Stderr, "ERROR: helm install failed: %v\n", err)
@@ -114,32 +105,6 @@ func main() {
 	<-sigCh
 	cancel()
 	fmt.Println("Shutdown signal received, exiting...")
-}
-
-func getDeploymentWithRetry(ctx context.Context, clientset *kubernetes.Clientset, name, namespace string) (*appsv1.Deployment, error) {
-	maxRetries := 10
-	initialDelay := time.Second * 2
-	maxDelay := time.Second * 30
-
-	for attempt := 0; attempt < maxRetries; attempt++ {
-		deployment, err := clientset.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
-		if err == nil {
-			fmt.Printf("Successfully retrieved deployment %s/%s\n", namespace, name)
-			return deployment, nil
-		}
-
-		delay := initialDelay * time.Duration(1<<uint(attempt))
-		if delay > maxDelay {
-			delay = maxDelay
-		}
-
-		fmt.Printf("Attempt %d/%d: Failed to get deployment %s/%s: %v. Retrying in %v...\n",
-			attempt+1, maxRetries, namespace, name, err, delay)
-
-		time.Sleep(delay)
-	}
-
-	return nil, fmt.Errorf("failed to get deployment after %d attempts", maxRetries)
 }
 
 func reportUsage(ds *appsv1.DaemonSet) {
