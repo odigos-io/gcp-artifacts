@@ -9,6 +9,7 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -52,7 +53,27 @@ func applicationOwnerRefFromDeployment(dep *appsv1.Deployment) *metav1.OwnerRefe
 	return nil
 }
 
-func processApplicationIfStuckOnShutdown(ctx context.Context, appClient crclient.Client, k8sConfig *rest.Config, app *appv1beta1.Application, helmNamespace string) {
+// namespaceSuggestsSIGTERMReasonTeardown returns true when the Application's namespace is terminating or already
+// gone. During namespace deletion the API server often SIGTERMs pods before the Application object has
+// metadata.deletionTimestamp set, so we use Namespace.Status.Phase as an additional signal on shutdown only.
+func namespaceSuggestsSIGTERMReasonTeardown(ctx context.Context, clientset kubernetes.Interface, namespace string) (bool, string) {
+	ns, err := clientset.CoreV1().Namespaces().Get(ctx, namespace, metav1.GetOptions{})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return true, "Namespace resource not found (likely removed during teardown)"
+		}
+		fmt.Fprintf(os.Stderr, "Shutdown: could not GET Namespace %q for phase check: %v\n", namespace, err)
+		return false, ""
+	}
+	switch ns.Status.Phase {
+	case corev1.NamespaceTerminating:
+		return true, fmt.Sprintf("Namespace %q phase=Terminating", namespace)
+	default:
+		return false, fmt.Sprintf("Namespace %q phase=%s", namespace, ns.Status.Phase)
+	}
+}
+
+func processApplicationIfStuckOnShutdown(ctx context.Context, appClient crclient.Client, k8sConfig *rest.Config, clientset kubernetes.Interface, app *appv1beta1.Application, helmNamespace string, installerDeploymentDeleting bool) {
 	hasFin := controllerutil.ContainsFinalizer(app, applicationFinalizer)
 	var delTS string
 	if app.DeletionTimestamp != nil {
@@ -66,7 +87,27 @@ func processApplicationIfStuckOnShutdown(ctx context.Context, appClient crclient
 		fmt.Printf("Shutdown: Application %s/%s has no finalizer %q; nothing to do\n", app.Namespace, app.Name, applicationFinalizer)
 		return
 	}
-	if err := handleApplicationDeletion(ctx, appClient, k8sConfig, app, helmNamespace); err != nil {
+
+	appDeleting := app.DeletionTimestamp != nil
+	nsTeardown, nsDetail := namespaceSuggestsSIGTERMReasonTeardown(ctx, clientset, app.Namespace)
+	fmt.Printf("Shutdown: namespace teardown cue: %v (%s); installer Deployment deleting=%v\n", nsTeardown, nsDetail, installerDeploymentDeleting)
+
+	if !appDeleting && !nsTeardown && !installerDeploymentDeleting {
+		fmt.Printf("Shutdown: skip helm/finalizer — Application not deleting, namespace not terminating, installer Deployment not deleting (e.g. rollout restart)\n")
+		return
+	}
+	if !appDeleting && (nsTeardown || installerDeploymentDeleting) {
+		reason := nsDetail
+		if installerDeploymentDeleting && !nsTeardown {
+			reason = "installer Deployment has deletionTimestamp"
+		} else if installerDeploymentDeleting && nsTeardown {
+			reason = nsDetail + "; installer Deployment also deleting"
+		}
+		fmt.Printf("Shutdown: proceeding without Application deletionTimestamp (%s)\n", reason)
+	}
+
+	allowWithoutDeletionTimestamp := !appDeleting && (nsTeardown || installerDeploymentDeleting)
+	if err := handleApplicationDeletion(ctx, appClient, k8sConfig, app, helmNamespace, allowWithoutDeletionTimestamp); err != nil {
 		fmt.Fprintf(os.Stderr, "ERROR: shutdown handler for %s/%s: %v\n", app.Namespace, app.Name, err)
 	} else {
 		fmt.Printf("Shutdown: handleApplicationDeletion finished OK for %s/%s\n", app.Namespace, app.Name)
@@ -116,7 +157,7 @@ func watchApplicationForHelmUninstall(ctx context.Context, k8sConfig *rest.Confi
 			return
 		}
 		mu.Lock()
-		err := handleApplicationDeletion(ctx, appClient, k8sConfig, app, helmNamespace)
+		err := handleApplicationDeletion(ctx, appClient, k8sConfig, app, helmNamespace, false)
 		mu.Unlock()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "ERROR: Application deletion hook: %v (will retry on resync)\n", err)
@@ -208,25 +249,31 @@ func processApplicationsWithOdigosFinalizerOnShutdown(ctx context.Context, k8sCo
 		return fmt.Errorf("get Application %s/%s: %w", appKey.Namespace, appKey.Name, err)
 	}
 	fmt.Printf("Shutdown: got Application %s/%s uid=%s\n", app.Namespace, app.Name, app.UID)
+	installerDepDeleting := false
 	if depErr == nil {
+		installerDepDeleting = dep.DeletionTimestamp != nil
 		if ref := applicationOwnerRefFromDeployment(dep); ref != nil && app.UID != ref.UID {
 			fmt.Fprintf(os.Stderr, "Shutdown: WARN Application uid %s != ownerRef uid %s\n", app.UID, ref.UID)
 		}
 	}
-	processApplicationIfStuckOnShutdown(ctx, appClient, k8sConfig, &app, helmNamespace)
+	processApplicationIfStuckOnShutdown(ctx, appClient, k8sConfig, clientset, &app, helmNamespace, installerDepDeleting)
 	fmt.Printf("Shutdown: end processApplicationsWithOdigosFinalizerOnShutdown for Application %s/%s\n", appKey.Namespace, appKey.Name)
 	return nil
 }
 
-func handleApplicationDeletion(ctx context.Context, appCli crclient.Client, k8sConfig *rest.Config, app *appv1beta1.Application, helmNamespace string) error {
+func handleApplicationDeletion(ctx context.Context, appCli crclient.Client, k8sConfig *rest.Config, app *appv1beta1.Application, helmNamespace string, allowWithoutDeletionTimestamp bool) error {
 	if app == nil {
 		return fmt.Errorf("application is nil")
 	}
-	if app.DeletionTimestamp == nil {
+	if app.DeletionTimestamp == nil && !allowWithoutDeletionTimestamp {
 		fmt.Printf("Application hook: %s/%s has no deletionTimestamp; skip helm uninstall and finalizer removal\n", app.Namespace, app.Name)
 		return nil
 	}
-	fmt.Printf("Application hook: %s/%s deleting since %v — helm uninstall in namespace %q\n", app.Namespace, app.Name, app.DeletionTimestamp.Time, helmNamespace)
+	if app.DeletionTimestamp == nil && allowWithoutDeletionTimestamp {
+		fmt.Printf("Application hook: %s/%s shutdown namespace-teardown path (no Application deletionTimestamp yet) — helm uninstall in namespace %q\n", app.Namespace, app.Name, helmNamespace)
+	} else {
+		fmt.Printf("Application hook: %s/%s deleting since %v — helm uninstall in namespace %q\n", app.Namespace, app.Name, app.DeletionTimestamp.Time, helmNamespace)
+	}
 	if err := helmUninstallOdigos(k8sConfig, helmNamespace); err != nil {
 		return fmt.Errorf("helm uninstall: %w", err)
 	}
