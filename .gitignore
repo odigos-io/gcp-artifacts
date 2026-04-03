@@ -1,2 +1,6 @@
 go.work
 go.work.sum
+
+# Helm chart archive for //go:embed (fetch with `make -C installer vendor-helm-chart`)
+/installer/odigos-chart.tgz
+/installer/helm-chart-odigos-*.tgz
