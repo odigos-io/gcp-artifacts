@@ -2,49 +2,63 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"sync"
 	"time"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/dynamic"
-	dynamicinformer "k8s.io/client-go/dynamic/dynamicinformer"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/cache"
+	toolscache "k8s.io/client-go/tools/cache"
+	"k8s.io/utils/ptr"
 
 	appv1beta1 "sigs.k8s.io/application/api/v1beta1"
+	crcache "sigs.k8s.io/controller-runtime/pkg/cache"
+	crclient "sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
 // applicationFinalizer blocks Application deletion until the installer runs helm uninstall
 // (same role as operator.odigos.io/odigos-finalizer on the Odigos CR).
 const applicationFinalizer = "odigos.io/gcp-marketplace-helm-uninstall"
 
-var applicationGVR = schema.GroupVersionResource{
-	Group:    "app.k8s.io",
-	Version:  "v1beta1",
-	Resource: "applications",
-}
+// applicationResyncPeriod matches the prior dynamic informer resync (retry failed uninstall hook).
+const applicationResyncPeriod = 6 * time.Minute
 
-// watchApplicationForHelmUninstall watches the Marketplace Application via a SharedInformer; when it is deleted,
-// runs helm uninstall for the Odigos release then removes this finalizer.
+// watchApplicationForHelmUninstall watches the Marketplace Application via controller-runtime cache;
+// when it is deleted, runs helm uninstall for the Odigos release then removes this finalizer.
 //
-// sigs.k8s.io/application publishes API types (api/v1beta1) but not a generated clientset/informers package like
-// k8s.io/client-go/kubernetes. The usual pattern is dynamic client + dynamicinformer (ListWatch under the hood).
+// sigs.k8s.io/application publishes API types (api/v1beta1) but not a generated clientset/informers
+// package like k8s.io/client-go/kubernetes; controller-runtime cache is the usual typed alternative
+// to dynamic client + dynamicinformer.
 func watchApplicationForHelmUninstall(ctx context.Context, k8sConfig *rest.Config, appName, appNamespace, helmNamespace string) {
-	dyn, err := dynamic.NewForConfig(k8sConfig)
+	appScheme := runtime.NewScheme()
+	utilruntime.Must(appv1beta1.AddToScheme(appScheme))
+
+	appCache, err := crcache.New(k8sConfig, crcache.Options{
+		Scheme: appScheme,
+		DefaultNamespaces: map[string]crcache.Config{
+			appNamespace: {},
+		},
+		SyncPeriod: ptr.To(applicationResyncPeriod),
+	})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "ERROR: dynamic client for Application informer: %v\n", err)
+		fmt.Fprintf(os.Stderr, "ERROR: controller-runtime cache for Application: %v\n", err)
 		return
 	}
 
-	factory := dynamicinformer.NewFilteredDynamicSharedInformerFactory(dyn, 6*time.Minute, appNamespace, nil)
-	informer := factory.ForResource(applicationGVR).Informer()
+	appClient, err := crclient.New(k8sConfig, crclient.Options{Scheme: appScheme})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ERROR: controller-runtime client for Application: %v\n", err)
+		return
+	}
+
+	informer, err := appCache.GetInformer(ctx, &appv1beta1.Application{})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ERROR: Application informer: %v\n", err)
+		return
+	}
 
 	var mu sync.Mutex
 	process := func(obj interface{}) {
@@ -55,96 +69,76 @@ func watchApplicationForHelmUninstall(ctx context.Context, k8sConfig *rest.Confi
 		if !ok || app.Name != appName {
 			return
 		}
-		if app.DeletionTimestamp == nil || !containsString(app.Finalizers, applicationFinalizer) {
+		if app.DeletionTimestamp == nil || !controllerutil.ContainsFinalizer(app, applicationFinalizer) {
 			return
 		}
 		mu.Lock()
-		err := handleApplicationDeletion(ctx, dyn, k8sConfig, appName, appNamespace, helmNamespace)
+		err := handleApplicationDeletion(ctx, appClient, k8sConfig, appName, appNamespace, helmNamespace)
 		mu.Unlock()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "ERROR: Application deletion hook: %v (will retry on resync)\n", err)
 		}
 	}
 
-	informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+	if _, err := informer.AddEventHandler(toolscache.ResourceEventHandlerFuncs{
 		AddFunc:    process,
 		UpdateFunc: func(_, newObj interface{}) { process(newObj) },
-	})
-
-	factory.Start(ctx.Done())
-	if !cache.WaitForCacheSync(ctx.Done(), informer.HasSynced) {
-		fmt.Fprintf(os.Stderr, "ERROR: Application informer cache sync failed\n")
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "ERROR: Application informer handler: %v\n", err)
 		return
 	}
-	fmt.Println("Application informer synced (app.k8s.io/v1beta1)")
+
+	go func() {
+		if err := appCache.Start(ctx); err != nil {
+			fmt.Fprintf(os.Stderr, "ERROR: Application cache: %v\n", err)
+		}
+	}()
+
+	if !appCache.WaitForCacheSync(ctx) {
+		fmt.Fprintf(os.Stderr, "ERROR: Application cache sync failed\n")
+		return
+	}
+	fmt.Println("Application cache synced (app.k8s.io/v1beta1)")
 
 	<-ctx.Done()
 }
 
 func applicationFromInformerObject(obj interface{}) (*appv1beta1.Application, bool) {
-	u, ok := obj.(*unstructured.Unstructured)
-	if !ok {
-		tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
-		if !ok {
-			return nil, false
-		}
-		u, ok = tombstone.Obj.(*unstructured.Unstructured)
-		if !ok {
-			return nil, false
-		}
+	if app, ok := obj.(*appv1beta1.Application); ok {
+		return app, true
 	}
-	var app appv1beta1.Application
-	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &app); err != nil {
+	tombstone, ok := obj.(toolscache.DeletedFinalStateUnknown)
+	if !ok {
 		return nil, false
 	}
-	return &app, true
+	app, ok := tombstone.Obj.(*appv1beta1.Application)
+	if !ok {
+		return nil, false
+	}
+	return app, true
 }
 
-func handleApplicationDeletion(ctx context.Context, dyn dynamic.Interface, k8sConfig *rest.Config, appName, appNamespace, helmNamespace string) error {
+func handleApplicationDeletion(ctx context.Context, appCli crclient.Client, k8sConfig *rest.Config, appName, appNamespace, helmNamespace string) error {
 	fmt.Printf("Application %s/%s is being deleted; running helm uninstall in namespace %s\n", appNamespace, appName, helmNamespace)
 	if err := helmUninstallOdigos(k8sConfig, helmNamespace); err != nil {
 		return fmt.Errorf("helm uninstall: %w", err)
 	}
-	return removeApplicationFinalizer(ctx, dyn, appNamespace, appName)
+	return removeApplicationFinalizer(ctx, appCli, appNamespace, appName)
 }
 
-func removeApplicationFinalizer(ctx context.Context, dyn dynamic.Interface, namespace, name string) error {
-	ri := dyn.Resource(applicationGVR).Namespace(namespace)
-	cur, err := ri.Get(ctx, name, metav1.GetOptions{})
-	if err != nil {
+func removeApplicationFinalizer(ctx context.Context, appClient crclient.Client, namespace, name string) error {
+	var app appv1beta1.Application
+	key := crclient.ObjectKey{Namespace: namespace, Name: name}
+	if err := appClient.Get(ctx, key, &app); err != nil {
 		return fmt.Errorf("get Application: %w", err)
 	}
-	finalizers := cur.GetFinalizers()
-	next := make([]string, 0, len(finalizers))
-	for _, f := range finalizers {
-		if f != applicationFinalizer {
-			next = append(next, f)
-		}
-	}
-	if len(next) == len(finalizers) {
+	orig := app.DeepCopy()
+	if !controllerutil.RemoveFinalizer(&app, applicationFinalizer) {
 		return nil
 	}
-	patch, err := json.Marshal(map[string]interface{}{
-		"metadata": map[string]interface{}{
-			"finalizers": next,
-		},
-	})
-	if err != nil {
-		return err
-	}
-	_, err = ri.Patch(ctx, name, types.MergePatchType, patch, metav1.PatchOptions{})
-	if err != nil {
+	if err := appClient.Patch(ctx, &app, crclient.MergeFrom(orig)); err != nil {
 		return fmt.Errorf("patch Application finalizers: %w", err)
 	}
 	fmt.Printf("Removed finalizer %q from Application %s/%s\n", applicationFinalizer, namespace, name)
 	return nil
-}
-
-func containsString(slice []string, s string) bool {
-	for _, x := range slice {
-		if x == s {
-			return true
-		}
-	}
-	return false
 }
