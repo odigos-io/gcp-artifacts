@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -27,9 +28,38 @@ import (
 
 const odigletDaemonSetName = "odiglet"
 
+// shutdownDrainTimeout is how long we wait after SIGTERM for in-flight Application deletion
+// (helm uninstall + finalizer patch) before exiting. Must be less than the pod
+// terminationGracePeriodSeconds (see manifests.yaml.template).
+func shutdownDrainTimeout() time.Duration {
+	const defaultDrain = 270 * time.Second
+	s := os.Getenv("ODIGOS_INSTALLER_SHUTDOWN_DRAIN")
+	if s == "" {
+		return defaultDrain
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil || d <= 0 {
+		return defaultDrain
+	}
+	return d
+}
+
+func waitFinalizerDrain(wg *sync.WaitGroup, timeout time.Duration) {
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		fmt.Println("Application uninstall / finalizer work completed")
+	case <-time.After(timeout):
+		fmt.Fprintf(os.Stderr, "WARN: shutdown drain timed out after %v; Application CR may retain a finalizer\n", timeout)
+	}
+}
+
 func main() {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := context.Background()
 
 	fmt.Println("Starting Odigos installer")
 
@@ -89,22 +119,32 @@ func main() {
 
 	fmt.Println("Odigos installation completed successfully")
 
+	// Separate from the root context so SIGTERM does not cancel API calls mid-flight during
+	// helm uninstall + Application finalizer removal (namespace teardown deletes the pod quickly).
+	watchCtx, watchCancel := context.WithCancel(context.Background())
+	var finalizerDrain sync.WaitGroup
+
 	if odigosInstallerName != "" && odigosInstallerNamespace != "" && ns != "" {
 		fmt.Printf("Watching Application %s/%s for deletion (helm uninstall finalizer)\n", odigosInstallerNamespace, odigosInstallerName)
-		go watchApplicationForHelmUninstall(ctx, k8sConfig, odigosInstallerName, odigosInstallerNamespace, ns)
+		go watchApplicationForHelmUninstall(watchCtx, k8sConfig, odigosInstallerName, odigosInstallerNamespace, ns, &finalizerDrain)
 	}
 
+	daemonCtx, daemonCancel := context.WithCancel(context.Background())
 	if ns != "" {
 		fmt.Println("Starting odiglet daemonset watcher")
-		watchOdigletDaemonSet(ctx, clientset, ns)
+		watchOdigletDaemonSet(daemonCtx, clientset, ns)
 	}
 
 	fmt.Println("Installer running, waiting for shutdown signal...")
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	<-sigCh
-	cancel()
-	fmt.Println("Shutdown signal received, exiting...")
+
+	fmt.Println("Shutdown signal received; stopping side watchers and draining Application finalizer work if any...")
+	daemonCancel()
+	waitFinalizerDrain(&finalizerDrain, shutdownDrainTimeout())
+	watchCancel()
+	fmt.Println("Exiting")
 }
 
 func reportUsage(ds *appsv1.DaemonSet) {
@@ -182,24 +222,34 @@ func watchOdigletDaemonSet(ctx context.Context, clientset *kubernetes.Clientset,
 
 	stopCh := make(chan struct{})
 	go factory.Start(stopCh)
+	go func() {
+		<-ctx.Done()
+		close(stopCh)
+	}()
 
-	if !cache.WaitForCacheSync(stopCh, daemonSetInformer.HasSynced) {
+	if !cache.WaitForCacheSync(ctx.Done(), daemonSetInformer.HasSynced) {
 		fmt.Fprintf(os.Stderr, "ERROR: Failed to sync cache for DaemonSet informer\n")
 		return
 	}
 
 	fmt.Println("Odiglet DaemonSet watcher started successfully")
 
-	ticker := time.NewTicker(60 * time.Second)
 	go func() {
-		for range ticker.C {
-			ds, err := clientset.AppsV1().DaemonSets(namespace).Get(ctx, odigletDaemonSetName, metav1.GetOptions{})
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "ERROR: Failed to get odiglet DaemonSet for periodic reporting: %v\n", err)
-				continue
+		ticker := time.NewTicker(60 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				ds, err := clientset.AppsV1().DaemonSets(namespace).Get(ctx, odigletDaemonSetName, metav1.GetOptions{})
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "ERROR: Failed to get odiglet DaemonSet for periodic reporting: %v\n", err)
+					continue
+				}
+				fmt.Println("Periodic usage report (60s interval)")
+				reportUsage(ds)
 			}
-			fmt.Println("Periodic usage report (60s interval)")
-			reportUsage(ds)
 		}
 	}()
 }

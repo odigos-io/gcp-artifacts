@@ -52,6 +52,9 @@ spec:
       labels:
         app: $name
     spec:
+      # Allow the installer time after SIGTERM to finish helm uninstall and remove the Application finalizer
+      # before the kubelet sends SIGKILL (default 30s is too short for namespace/Application teardown).
+      terminationGracePeriodSeconds: 300
       serviceAccountName: $installerServiceAccount
       containers:
         - name: installer

@@ -32,7 +32,10 @@ const applicationResyncPeriod = 6 * time.Minute
 // sigs.k8s.io/application publishes API types (api/v1beta1) but not a generated clientset/informers
 // package like k8s.io/client-go/kubernetes; controller-runtime cache is the usual typed alternative
 // to dynamic client + dynamicinformer.
-func watchApplicationForHelmUninstall(ctx context.Context, k8sConfig *rest.Config, appName, appNamespace, helmNamespace string) {
+//
+// inFlightFinalizer, when non-nil, has Add(1) before and Done() after each handleApplicationDeletion so the process
+// can wait on shutdown (SIGTERM) for helm uninstall + finalizer removal to finish before exiting.
+func watchApplicationForHelmUninstall(ctx context.Context, k8sConfig *rest.Config, appName, appNamespace, helmNamespace string, inFlightFinalizer *sync.WaitGroup) {
 	appScheme := runtime.NewScheme()
 	utilruntime.Must(appv1beta1.AddToScheme(appScheme))
 
@@ -71,6 +74,10 @@ func watchApplicationForHelmUninstall(ctx context.Context, k8sConfig *rest.Confi
 		}
 		if app.DeletionTimestamp == nil || !controllerutil.ContainsFinalizer(app, applicationFinalizer) {
 			return
+		}
+		if inFlightFinalizer != nil {
+			inFlightFinalizer.Add(1)
+			defer inFlightFinalizer.Done()
 		}
 		mu.Lock()
 		err := handleApplicationDeletion(ctx, appClient, k8sConfig, appName, appNamespace, helmNamespace)
