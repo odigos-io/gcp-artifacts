@@ -28,7 +28,8 @@ import (
 const odigletDaemonSetName = "odiglet"
 
 func main() {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	fmt.Println("Starting Odigos installer")
 
@@ -98,6 +99,11 @@ func main() {
 
 	fmt.Println("Odigos installation completed successfully")
 
+	if odigosInstallerName != "" && odigosInstallerNamespace != "" && ns != "" {
+		fmt.Printf("Watching Application %s/%s for deletion (helm uninstall finalizer)\n", odigosInstallerNamespace, odigosInstallerName)
+		go watchApplicationForHelmUninstall(ctx, k8sConfig, odigosInstallerName, odigosInstallerNamespace, ns)
+	}
+
 	if ns != "" {
 		fmt.Println("Starting odiglet daemonset watcher")
 		watchOdigletDaemonSet(ctx, clientset, ns)
@@ -107,6 +113,7 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	<-sigCh
+	cancel()
 	fmt.Println("Shutdown signal received, exiting...")
 }
 

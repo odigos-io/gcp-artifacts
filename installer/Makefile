@@ -1,7 +1,7 @@
 # Variables
 ORG ?= gcr.io/odigos-public
 IMAGE_NAME = odigos
-TAG ?= 1.22.3
+TAG ?= 1.23.0
 # Chart version from https://odigos-io.github.io/odigos/ (must exist for `helm pull`); keep in sync with TAG
 CHART_VERSION ?= $(TAG)
 PLATFORMS = linux/amd64,linux/arm64

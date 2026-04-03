@@ -3,6 +3,8 @@ kind: Application
 metadata:
   name: "$name"
   namespace: "$namespace"
+  finalizers:
+    - odigos.io/gcp-marketplace-helm-uninstall
   annotations:
     marketplace.cloud.google.com/deploy-info: '{"partner_id": "V3NG7pbshZ", "product_id": "odigos", "partner_name": "Odigos"}'
     kubernetes-engine.cloud.google.com/icon: data:image/png;base64,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
@@ -11,14 +13,89 @@ metadata:
 spec:
   descriptor:
     type: odigos
-    version: '1.22.3'
+    version: '1.23.0'
   selector:
     matchLabels:
       odigos.io/system-object: "true"
+  # componentKinds list types for Application aggregation/UI (see Marketplace packaging docs).
+  # Uninstall is driven by metadata.finalizers + the installer pod (helm uninstall), not owner refs.
+  # https://docs.cloud.google.com/marketplace/docs/partners/kubernetes/create-app-package
   componentKinds:
-  # The group is determined from the apiVersion: $GROUP_NAME/$VERSION
-  # TODO https://github.com/GoogleCloudPlatform/marketplace-k8s-app-tools/blob/master/docs/building-deployer-helm.md#application-components
+  # actions.odigos.io (CRDs from chart)
+  - group: actions.odigos.io
+    kind: AddClusterInfo
+  - group: actions.odigos.io
+    kind: DeleteAttribute
+  - group: actions.odigos.io
+    kind: ErrorSampler
+  - group: actions.odigos.io
+    kind: K8sAttributesResolver
+  - group: actions.odigos.io
+    kind: LatencySampler
+  - group: actions.odigos.io
+    kind: PiiMasking
+  - group: actions.odigos.io
+    kind: ProbabilisticSampler
+  - group: actions.odigos.io
+    kind: RenameAttribute
+  - group: actions.odigos.io
+    kind: ServiceNameSampler
+  - group: actions.odigos.io
+    kind: SpanAttributeSampler
+  # admission / webhooks
+  - group: admissionregistration.k8s.io
+    kind: MutatingWebhookConfiguration
+  - group: admissionregistration.k8s.io
+    kind: ValidatingWebhookConfiguration
+  - group: apiextensions.k8s.io
+    kind: CustomResourceDefinition
+  - group: apps
+    kind: DaemonSet
   - group: apps
     kind: Deployment
+  - group: autoscaling
+    kind: HorizontalPodAutoscaler
+  - group: batch
+    kind: Job
+  # odigos.io (CRDs + user-facing CR instances labeled as system objects)
+  - group: odigos.io
+    kind: Action
+  - group: odigos.io
+    kind: CollectorsGroup
+  - group: odigos.io
+    kind: Destination
+  - group: odigos.io
+    kind: InstrumentationConfig
+  - group: odigos.io
+    kind: InstrumentationInstance
+  - group: odigos.io
+    kind: InstrumentationRule
+  - group: odigos.io
+    kind: Processor
+  - group: odigos.io
+    kind: Sampling
+  - group: odigos.io
+    kind: Source
+  - group: policy
+    kind: PodDisruptionBudget
+  - group: rbac.authorization.k8s.io
+    kind: ClusterRole
+  - group: rbac.authorization.k8s.io
+    kind: ClusterRoleBinding
+  - group: rbac.authorization.k8s.io
+    kind: Role
+  - group: rbac.authorization.k8s.io
+    kind: RoleBinding
+  - group: storage.k8s.io
+    kind: CSIDriver
+  # core / v1
+  - group: ''
+    kind: ConfigMap
+  - group: ''
+    kind: ResourceQuota
+  - group: ''
+    kind: Secret
   - group: ''
     kind: Service
+  - group: ''
+    kind: ServiceAccount

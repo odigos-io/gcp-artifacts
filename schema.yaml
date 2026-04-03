@@ -4,7 +4,7 @@ x-google-marketplace:
   applicationApiVersion: v1beta1
   # The published version is required and MUST match the tag
   # of the deployer image
-  publishedVersion: '1.22.3'
+  publishedVersion: '1.23.0'
   publishedVersionMetadata:
     releaseNote: >-
       Odigos is a platform for tracing and observability.
@@ -96,22 +96,44 @@ properties:
             - apiGroups: ['operator.odigos.io']
               resources: ['*']
               verbs: ['*']
+            # Application CR (finalizer: installer watches and patches on delete)
+            - apiGroups: ['app.k8s.io']
+              resources: ['applications']
+              verbs: ['get', 'list', 'watch', 'patch', 'update']
             # Core resources
             - apiGroups: ['']
               resources: ['configmaps', 'secrets', 'services', 'serviceaccounts', 'pods', 'namespaces', 'resourcequotas', 'nodes', 'endpoints', 'events']
               verbs: ['get', 'list', 'watch', 'create', 'update', 'patch', 'delete', 'deletecollection']
+            # Core finalizers (operator kubebuilder)
+            - apiGroups: ['']
+              resources: ['configmaps/finalizers', 'pods/finalizers']
+              verbs: ['update']
             # Core subresources
             - apiGroups: ['']
-              resources: ['nodes/proxy', 'nodes/stats', 'pods/status']
+              resources: ['nodes/proxy', 'pods/status']
               verbs: ['get', 'list']
+            - apiGroups: ['']
+              resources: ['nodes/stats']
+              verbs: ['get', 'list', 'watch']
+            # pods/log + pods/proxy: required so Helm can bind odigos-ui Role (UI debug dump / pprof)
+            - apiGroups: ['']
+              resources: ['pods/log', 'pods/proxy']
+              verbs: ['get']
             # Apps resources
             - apiGroups: ['apps']
               resources: ['deployments', 'daemonsets', 'statefulsets', 'replicasets']
               verbs: ['get', 'list', 'watch', 'create', 'update', 'patch', 'delete', 'deletecollection']
             # Apps subresources
             - apiGroups: ['apps']
-              resources: ['deployments/status', 'daemonsets/status']
+              resources: ['deployments/status', 'daemonsets/status', 'statefulsets/status']
               verbs: ['get']
+            - apiGroups: ['apps']
+              resources: ['deployments/scale']
+              verbs: ['get', 'update', 'patch']
+            # Apps finalizers (operator kubebuilder)
+            - apiGroups: ['apps']
+              resources: ['deployments/finalizers', 'replicasets/finalizers', 'daemonsets/finalizers', 'statefulsets/finalizers']
+              verbs: ['update']
             # Batch resources
             - apiGroups: ['batch']
               resources: ['jobs', 'cronjobs']
@@ -127,11 +149,16 @@ properties:
             # RBAC resources
             - apiGroups: ['rbac.authorization.k8s.io']
               resources: ['roles', 'rolebindings', 'clusterroles', 'clusterrolebindings']
-              verbs: ['get', 'list', 'watch', 'create', 'update', 'patch', 'delete']
+              verbs: ['get', 'list', 'watch', 'create', 'update', 'patch', 'delete', 'deletecollection']
             # Policy resources
             - apiGroups: ['policy']
               resources: ['poddisruptionbudgets']
               verbs: ['get', 'list', 'watch', 'create', 'update', 'patch', 'delete']
+            # PodSecurityPolicy (operator kubebuilder: use named privileged PSP)
+            - apiGroups: ['policy']
+              resources: ['podsecuritypolicies']
+              resourceNames: ['privileged']
+              verbs: ['use']
             # Webhook configurations
             - apiGroups: ['admissionregistration.k8s.io']
               resources: ['mutatingwebhookconfigurations', 'validatingwebhookconfigurations']
@@ -139,7 +166,22 @@ properties:
             - apiGroups: ['apiregistration.k8s.io']
               resources: ['apiservices']
               verbs: ['get', 'list', 'watch', 'create', 'update', 'patch']
-  
+            # OpenShift SCC (operator kubebuilder)
+            - apiGroups: ['security.openshift.io']
+              resources: ['securitycontextconstraints']
+              verbs: ['use']
+            # OpenShift DeploymentConfigs (operator kubebuilder)
+            - apiGroups: ['apps.openshift.io']
+              resources: ['deploymentconfigs', 'deploymentconfigs/finalizers']
+              verbs: ['get', 'list', 'watch', 'update', 'patch']
+            # Argo Rollouts (operator kubebuilder)
+            - apiGroups: ['argoproj.io']
+              resources: ['rollouts']
+              verbs: ['get', 'list', 'watch', 'update', 'patch']
+            # EndpointSlices (operator kubebuilder)
+            - apiGroups: ['discovery.k8s.io']
+              resources: ['endpointslices']
+              verbs: ['get', 'list', 'watch']
 
 required:
 - name
