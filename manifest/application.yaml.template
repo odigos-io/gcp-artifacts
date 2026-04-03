@@ -3,6 +3,7 @@ kind: Application
 metadata:
   name: "$name"
   namespace: "$namespace"
+  # Uninstall: (1) informer on Application delete. (2) SIGTERM — Application from GCP ownerReference on installer Deployment (ODIGOS_INSTALLER_NAME/NAMESPACE).
   finalizers:
     - odigos.io/gcp-marketplace-helm-uninstall
   annotations:
@@ -18,7 +19,7 @@ spec:
     matchLabels:
       odigos.io/system-object: "true"
   # componentKinds list types for Application aggregation/UI (see Marketplace packaging docs).
-  # Uninstall is driven by metadata.finalizers + the installer pod (helm uninstall), not owner refs.
+  # Uninstall: metadata.finalizers + installer (informer + SIGTERM; Deployment owner ref → Application).
   # https://docs.cloud.google.com/marketplace/docs/partners/kubernetes/create-app-package
   componentKinds:
   # actions.odigos.io (CRDs from chart)
