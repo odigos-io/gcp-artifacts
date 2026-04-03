@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/signal"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -28,34 +27,19 @@ import (
 
 const odigletDaemonSetName = "odiglet"
 
-// shutdownDrainTimeout is how long we wait after SIGTERM for in-flight Application deletion
-// (helm uninstall + finalizer patch) before exiting. Must be less than the pod
-// terminationGracePeriodSeconds (see manifests.yaml.template).
-func shutdownDrainTimeout() time.Duration {
-	const defaultDrain = 270 * time.Second
+// shutdownFinalizerTimeout bounds SIGTERM cleanup: Application from Deployment→Application owner ref only, helm uninstall, patch.
+// Keep below the pod terminationGracePeriodSeconds (manifests.yaml.template).
+func shutdownFinalizerTimeout() time.Duration {
+	const defaultTimeout = 270 * time.Second
 	s := os.Getenv("ODIGOS_INSTALLER_SHUTDOWN_DRAIN")
 	if s == "" {
-		return defaultDrain
+		return defaultTimeout
 	}
 	d, err := time.ParseDuration(s)
 	if err != nil || d <= 0 {
-		return defaultDrain
+		return defaultTimeout
 	}
 	return d
-}
-
-func waitFinalizerDrain(wg *sync.WaitGroup, timeout time.Duration) {
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-		fmt.Println("Application uninstall / finalizer work completed")
-	case <-time.After(timeout):
-		fmt.Fprintf(os.Stderr, "WARN: shutdown drain timed out after %v; Application CR may retain a finalizer\n", timeout)
-	}
 }
 
 func main() {
@@ -129,14 +113,11 @@ func main() {
 
 	fmt.Println("Odigos installation completed successfully")
 
-	// Separate from the root context so SIGTERM does not cancel API calls mid-flight during
-	// helm uninstall + Application finalizer removal (namespace teardown deletes the pod quickly).
 	watchCtx, watchCancel := context.WithCancel(context.Background())
-	var finalizerDrain sync.WaitGroup
 
 	if odigosInstallerName != "" && odigosInstallerNamespace != "" && ns != "" {
-		fmt.Printf("Watching Application %s/%s for deletion (helm uninstall finalizer)\n", odigosInstallerNamespace, odigosInstallerName)
-		go watchApplicationForHelmUninstall(watchCtx, k8sConfig, odigosInstallerName, odigosInstallerNamespace, ns, &finalizerDrain)
+		fmt.Printf("Watching Application %s/%s for deletion; SIGTERM resolves Application via GCP Application ownerReference on installer Deployment\n", odigosInstallerNamespace, odigosInstallerName)
+		go watchApplicationForHelmUninstall(watchCtx, k8sConfig, odigosInstallerName, odigosInstallerNamespace, ns)
 	}
 
 	daemonCtx, daemonCancel := context.WithCancel(context.Background())
@@ -150,9 +131,19 @@ func main() {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	<-sigCh
 
-	fmt.Println("Shutdown signal received; stopping side watchers and draining Application finalizer work if any...")
+	fmt.Println("Shutdown signal received; stopping odiglet watcher...")
 	daemonCancel()
-	waitFinalizerDrain(&finalizerDrain, shutdownDrainTimeout())
+
+	if odigosInstallerNamespace != "" && odigosInstallerName != "" && ns != "" {
+		shutdownTimeout := shutdownFinalizerTimeout()
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		fmt.Printf("SIGTERM: Application cleanup via Deployment→Application owner ref (%q, Deployment %s/%s, timeout %v)...\n", applicationFinalizer, odigosInstallerNamespace, odigosInstallerName, shutdownTimeout)
+		if err := processApplicationsWithOdigosFinalizerOnShutdown(shutdownCtx, k8sConfig, clientset, odigosInstallerNamespace, odigosInstallerName, ns); err != nil {
+			fmt.Fprintf(os.Stderr, "WARN: Application cleanup on shutdown: %v\n", err)
+		}
+		shutdownCancel()
+	}
+
 	watchCancel()
 	fmt.Println("Exiting")
 }

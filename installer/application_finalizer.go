@@ -4,11 +4,15 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	toolscache "k8s.io/client-go/tools/cache"
 	"k8s.io/utils/ptr"
@@ -23,19 +27,43 @@ import (
 // (same role as operator.odigos.io/odigos-finalizer on the Odigos CR).
 const applicationFinalizer = "odigos.io/gcp-marketplace-helm-uninstall"
 
-// applicationResyncPeriod matches the prior dynamic informer resync (retry failed uninstall hook).
+// applicationResyncPeriod is the controller-runtime cache resync (retries failed uninstall from the watch path).
 const applicationResyncPeriod = 6 * time.Minute
 
-// watchApplicationForHelmUninstall watches the Marketplace Application via controller-runtime cache;
-// when it is deleted, runs helm uninstall for the Odigos release then removes this finalizer.
-//
-// sigs.k8s.io/application publishes API types (api/v1beta1) but not a generated clientset/informers
-// package like k8s.io/client-go/kubernetes; controller-runtime cache is the usual typed alternative
-// to dynamic client + dynamicinformer.
-//
-// inFlightFinalizer, when non-nil, has Add(1) before and Done() after each handleApplicationDeletion so the process
-// can wait on shutdown (SIGTERM) for helm uninstall + finalizer removal to finish before exiting.
-func watchApplicationForHelmUninstall(ctx context.Context, k8sConfig *rest.Config, appName, appNamespace, helmNamespace string, inFlightFinalizer *sync.WaitGroup) {
+func applicationClient(k8sConfig *rest.Config) (crclient.Client, error) {
+	scheme := runtime.NewScheme()
+	utilruntime.Must(appv1beta1.AddToScheme(scheme))
+	return crclient.New(k8sConfig, crclient.Options{Scheme: scheme})
+}
+
+// applicationOwnerRefFromDeployment returns the ownerReference GCP Marketplace sets on the installer Deployment
+// pointing at the Application CR (dependent Deployment → owner Application).
+func applicationOwnerRefFromDeployment(dep *appsv1.Deployment) *metav1.OwnerReference {
+	for i := range dep.OwnerReferences {
+		ref := &dep.OwnerReferences[i]
+		if ref.Kind != "Application" {
+			continue
+		}
+		if strings.HasPrefix(ref.APIVersion, "app.k8s.io/") {
+			return ref
+		}
+	}
+	return nil
+}
+
+func processApplicationIfStuckOnShutdown(ctx context.Context, appClient crclient.Client, k8sConfig *rest.Config, app *appv1beta1.Application, helmNamespace string) {
+	if !controllerutil.ContainsFinalizer(app, applicationFinalizer) {
+		fmt.Printf("Shutdown: Application %s/%s has no finalizer %q; skipping\n", app.Namespace, app.Name, applicationFinalizer)
+		return
+	}
+	if err := handleApplicationDeletion(ctx, appClient, k8sConfig, app, helmNamespace); err != nil {
+		fmt.Fprintf(os.Stderr, "ERROR: shutdown handler for %s/%s: %v\n", app.Namespace, app.Name, err)
+	}
+}
+
+// watchApplicationForHelmUninstall watches the Marketplace Application via controller-runtime cache. When the
+// Application is deleted (e.g. kubectl delete application), runs helm uninstall and removes applicationFinalizer.
+func watchApplicationForHelmUninstall(ctx context.Context, k8sConfig *rest.Config, appName, appNamespace, helmNamespace string) {
 	appScheme := runtime.NewScheme()
 	utilruntime.Must(appv1beta1.AddToScheme(appScheme))
 
@@ -75,12 +103,8 @@ func watchApplicationForHelmUninstall(ctx context.Context, k8sConfig *rest.Confi
 		if app.DeletionTimestamp == nil || !controllerutil.ContainsFinalizer(app, applicationFinalizer) {
 			return
 		}
-		if inFlightFinalizer != nil {
-			inFlightFinalizer.Add(1)
-			defer inFlightFinalizer.Done()
-		}
 		mu.Lock()
-		err := handleApplicationDeletion(ctx, appClient, k8sConfig, appName, appNamespace, helmNamespace)
+		err := handleApplicationDeletion(ctx, appClient, k8sConfig, app, helmNamespace)
 		mu.Unlock()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "ERROR: Application deletion hook: %v (will retry on resync)\n", err)
@@ -105,7 +129,7 @@ func watchApplicationForHelmUninstall(ctx context.Context, k8sConfig *rest.Confi
 		fmt.Fprintf(os.Stderr, "ERROR: Application cache sync failed\n")
 		return
 	}
-	fmt.Println("Application cache synced (app.k8s.io/v1beta1)")
+	fmt.Println("Application informer ready (app.k8s.io/v1beta1); delete Application triggers helm uninstall")
 
 	<-ctx.Done()
 }
@@ -125,12 +149,58 @@ func applicationFromInformerObject(obj interface{}) (*appv1beta1.Application, bo
 	return app, true
 }
 
-func handleApplicationDeletion(ctx context.Context, appCli crclient.Client, k8sConfig *rest.Config, appName, appNamespace, helmNamespace string) error {
-	fmt.Printf("Application %s/%s is being deleted; running helm uninstall in namespace %s\n", appNamespace, appName, helmNamespace)
+// processApplicationsWithOdigosFinalizerOnShutdown loads the installer Deployment by deployNamespace/deployName
+// (ODIGOS_INSTALLER_NAMESPACE / ODIGOS_INSTALLER_NAME), reads the Application ownerReference GCP sets on that
+// Deployment, and processes that Application if it still has applicationFinalizer.
+func processApplicationsWithOdigosFinalizerOnShutdown(ctx context.Context, k8sConfig *rest.Config, clientset kubernetes.Interface, deployNamespace, deployName, helmNamespace string) error {
+	appClient, err := applicationClient(k8sConfig)
+	if err != nil {
+		return fmt.Errorf("application client: %w", err)
+	}
+
+	if deployName == "" || deployNamespace == "" {
+		fmt.Fprintf(os.Stderr, "WARN: shutdown skip: installer Deployment name or namespace empty\n")
+		return nil
+	}
+
+	dep, err := clientset.AppsV1().Deployments(deployNamespace).Get(ctx, deployName, metav1.GetOptions{})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "WARN: shutdown skip: get installer Deployment %s/%s: %v\n", deployNamespace, deployName, err)
+		return nil
+	}
+
+	fmt.Printf("Shutdown: installer Deployment %s/%s (uid=%s)\n", dep.Namespace, dep.Name, dep.UID)
+	ref := applicationOwnerRefFromDeployment(dep)
+	if ref == nil {
+		fmt.Fprintf(os.Stderr, "WARN: shutdown skip: Deployment %s/%s has no app.k8s.io Application ownerReference\n", dep.Namespace, dep.Name)
+		return nil
+	}
+
+	var app appv1beta1.Application
+	key := crclient.ObjectKey{Namespace: dep.Namespace, Name: ref.Name}
+	if err := appClient.Get(ctx, key, &app); err != nil {
+		return fmt.Errorf("get Application %s/%s from Deployment owner ref: %w", dep.Namespace, ref.Name, err)
+	}
+	if app.UID != ref.UID {
+		fmt.Fprintf(os.Stderr, "WARN: Application %s/%s UID %s != owner ref UID %s\n", app.Namespace, app.Name, app.UID, ref.UID)
+	}
+	processApplicationIfStuckOnShutdown(ctx, appClient, k8sConfig, &app, helmNamespace)
+	return nil
+}
+
+func handleApplicationDeletion(ctx context.Context, appCli crclient.Client, k8sConfig *rest.Config, app *appv1beta1.Application, helmNamespace string) error {
+	if app == nil {
+		return fmt.Errorf("application is nil")
+	}
+	if app.DeletionTimestamp == nil {
+		fmt.Printf("Application %s/%s has no deletionTimestamp; skipping helm uninstall and finalizer removal\n", app.Namespace, app.Name)
+		return nil
+	}
+	fmt.Printf("Application %s/%s is deleting; running helm uninstall in namespace %s\n", app.Namespace, app.Name, helmNamespace)
 	if err := helmUninstallOdigos(k8sConfig, helmNamespace); err != nil {
 		return fmt.Errorf("helm uninstall: %w", err)
 	}
-	return removeApplicationFinalizer(ctx, appCli, appNamespace, appName)
+	return removeApplicationFinalizer(ctx, appCli, app.Namespace, app.Name)
 }
 
 func removeApplicationFinalizer(ctx context.Context, appClient crclient.Client, namespace, name string) error {
