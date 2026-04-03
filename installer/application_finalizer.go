@@ -73,6 +73,17 @@ func namespaceSuggestsSIGTERMReasonTeardown(ctx context.Context, clientset kuber
 	}
 }
 
+// helmUninstallFailedBecauseNamespaceTerminating matches API errors when the Helm release namespace is already
+// terminating (e.g. pre-delete hook Job forbidden). In that case we only remove the Application finalizer.
+func helmUninstallFailedBecauseNamespaceTerminating(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "because it is being terminated") ||
+		(strings.Contains(s, "unable to create new content in namespace") && strings.Contains(strings.ToLower(s), "terminat"))
+}
+
 func processApplicationIfStuckOnShutdown(ctx context.Context, appClient crclient.Client, k8sConfig *rest.Config, clientset kubernetes.Interface, app *appv1beta1.Application, helmNamespace string, installerDeploymentDeleting bool) {
 	hasFin := controllerutil.ContainsFinalizer(app, applicationFinalizer)
 	var delTS string
@@ -107,7 +118,7 @@ func processApplicationIfStuckOnShutdown(ctx context.Context, appClient crclient
 	}
 
 	allowWithoutDeletionTimestamp := !appDeleting && (nsTeardown || installerDeploymentDeleting)
-	if err := handleApplicationDeletion(ctx, appClient, k8sConfig, app, helmNamespace, allowWithoutDeletionTimestamp); err != nil {
+	if err := handleApplicationDeletion(ctx, appClient, k8sConfig, clientset, app, helmNamespace, allowWithoutDeletionTimestamp); err != nil {
 		fmt.Fprintf(os.Stderr, "ERROR: shutdown handler for %s/%s: %v\n", app.Namespace, app.Name, err)
 	} else {
 		fmt.Printf("Shutdown: handleApplicationDeletion finished OK for %s/%s\n", app.Namespace, app.Name)
@@ -138,6 +149,12 @@ func watchApplicationForHelmUninstall(ctx context.Context, k8sConfig *rest.Confi
 		return
 	}
 
+	k8sClientset, err := kubernetes.NewForConfig(k8sConfig)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ERROR: kubernetes clientset for Application uninstall: %v\n", err)
+		return
+	}
+
 	informer, err := appCache.GetInformer(ctx, &appv1beta1.Application{})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ERROR: Application informer: %v\n", err)
@@ -157,7 +174,7 @@ func watchApplicationForHelmUninstall(ctx context.Context, k8sConfig *rest.Confi
 			return
 		}
 		mu.Lock()
-		err := handleApplicationDeletion(ctx, appClient, k8sConfig, app, helmNamespace, false)
+		err := handleApplicationDeletion(ctx, appClient, k8sConfig, k8sClientset, app, helmNamespace, false)
 		mu.Unlock()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "ERROR: Application deletion hook: %v (will retry on resync)\n", err)
@@ -261,7 +278,7 @@ func processApplicationsWithOdigosFinalizerOnShutdown(ctx context.Context, k8sCo
 	return nil
 }
 
-func handleApplicationDeletion(ctx context.Context, appCli crclient.Client, k8sConfig *rest.Config, app *appv1beta1.Application, helmNamespace string, allowWithoutDeletionTimestamp bool) error {
+func handleApplicationDeletion(ctx context.Context, appCli crclient.Client, k8sConfig *rest.Config, clientset kubernetes.Interface, app *appv1beta1.Application, helmNamespace string, allowWithoutDeletionTimestamp bool) error {
 	if app == nil {
 		return fmt.Errorf("application is nil")
 	}
@@ -274,7 +291,18 @@ func handleApplicationDeletion(ctx context.Context, appCli crclient.Client, k8sC
 	} else {
 		fmt.Printf("Application hook: %s/%s deleting since %v — helm uninstall in namespace %q\n", app.Namespace, app.Name, app.DeletionTimestamp.Time, helmNamespace)
 	}
+
+	helmNSTerm, helmNSWhy := namespaceSuggestsSIGTERMReasonTeardown(ctx, clientset, helmNamespace)
+	if helmNSTerm {
+		fmt.Printf("Application hook: Helm namespace %q %s — skipping helm uninstall; removing Application finalizer only (namespaced resources are being torn down; cluster-scoped objects may need manual cleanup)\n", helmNamespace, helmNSWhy)
+		return removeApplicationFinalizer(ctx, appCli, app.Namespace, app.Name)
+	}
+
 	if err := helmUninstallOdigos(k8sConfig, helmNamespace); err != nil {
+		if helmUninstallFailedBecauseNamespaceTerminating(err) {
+			fmt.Fprintf(os.Stderr, "Application hook: helm uninstall failed while namespace is terminating (%v); removing Application finalizer only\n", err)
+			return removeApplicationFinalizer(ctx, appCli, app.Namespace, app.Name)
+		}
 		return fmt.Errorf("helm uninstall: %w", err)
 	}
 	fmt.Printf("Application hook: helm uninstall ok — patch finalizer on Application %s/%s\n", app.Namespace, app.Name)
