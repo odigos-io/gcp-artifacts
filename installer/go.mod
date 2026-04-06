@@ -3,6 +3,7 @@ module github.com/odigos-io/odigos/gcp-artifacts/installer
 go 1.26.1
 
 require (
+	github.com/odigos-io/odigos/api v1.23.0
 	github.com/odigos-io/odigos/cli v0.0.0-20251127100626-0de62857a58e
 	github.com/odigos-io/odigos/common v1.23.0
 	helm.sh/helm/v3 v3.19.0
@@ -81,7 +82,6 @@ require (
 	github.com/monochromegane/go-gitignore v0.0.0-20200626010858-205db1a8cc00 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/mxk/go-flowrate v0.0.0-20140419014527-cca7078d478f // indirect
-	github.com/odigos-io/odigos/api v1.23.0 // indirect
 	github.com/odigos-io/odigos/k8sutils v1.23.0 // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect
 	github.com/opencontainers/image-spec v1.1.1 // indirect

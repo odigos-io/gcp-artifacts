@@ -163,9 +163,11 @@ properties:
             - apiGroups: ['admissionregistration.k8s.io']
               resources: ['mutatingwebhookconfigurations', 'validatingwebhookconfigurations']
               verbs: ['get', 'list', 'watch', 'create', 'update', 'patch', 'delete']
+            # Aggregated APIServices (e.g. custom.metrics from Odigos chart): delete when release ns is terminating
+            # so namespace deletion is not blocked by NamespaceDeletionDiscoveryFailure.
             - apiGroups: ['apiregistration.k8s.io']
               resources: ['apiservices']
-              verbs: ['get', 'list', 'watch', 'create', 'update', 'patch']
+              verbs: ['get', 'list', 'watch', 'create', 'update', 'patch', 'delete']
             # OpenShift SCC (operator kubebuilder)
             - apiGroups: ['security.openshift.io']
               resources: ['securitycontextconstraints']

@@ -12,12 +12,17 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	toolscache "k8s.io/client-go/tools/cache"
 	"k8s.io/utils/ptr"
+
+	"github.com/odigos-io/odigos/api/k8sconsts"
 
 	appv1beta1 "sigs.k8s.io/application/api/v1beta1"
 	crcache "sigs.k8s.io/controller-runtime/pkg/cache"
@@ -82,6 +87,55 @@ func helmUninstallFailedBecauseNamespaceTerminating(err error) bool {
 	s := err.Error()
 	return strings.Contains(s, "because it is being terminated") ||
 		(strings.Contains(s, "unable to create new content in namespace") && strings.Contains(strings.ToLower(s), "terminat"))
+}
+
+var apiserviceGVR = schema.GroupVersionResource{Group: "apiregistration.k8s.io", Version: "v1", Resource: "apiservices"}
+
+// deleteAggregatedAPIServicesForHelmReleaseNamespace removes the Odigos custom-metrics APIService
+// (k8sconsts.CustomMetricsAPIServiceName) only when spec.service matches RegisterCustomMetricsAPI:
+// name k8sconsts.AutoScalerWebhookServiceName, namespace = Helm release namespace. See odigos
+// autoscaler/controllers/metricshandler/custom_metrics_handler.go.
+func deleteAggregatedAPIServicesForHelmReleaseNamespace(ctx context.Context, k8sConfig *rest.Config, helmNamespace string) {
+	if helmNamespace == "" {
+		return
+	}
+	dc, err := dynamic.NewForConfig(k8sConfig)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Application hook: dynamic client for APIService cleanup: %v\n", err)
+		return
+	}
+	list, err := dc.Resource(apiserviceGVR).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Application hook: list APIServices for Helm-ns cleanup: %v\n", err)
+		return
+	}
+	for i := range list.Items {
+		item := &list.Items[i]
+		if item.GetName() != k8sconsts.CustomMetricsAPIServiceName {
+			continue
+		}
+		svc, found, err := unstructured.NestedMap(item.Object, "spec", "service")
+		if err != nil || !found || svc == nil {
+			continue
+		}
+		svcName, ok, err := unstructured.NestedString(svc, "name")
+		if err != nil || !ok || svcName != k8sconsts.AutoScalerWebhookServiceName {
+			continue
+		}
+		ns, ok, err := unstructured.NestedString(svc, "namespace")
+		if err != nil || !ok || ns != helmNamespace {
+			continue
+		}
+		name := item.GetName()
+		if err := dc.Resource(apiserviceGVR).Delete(ctx, name, metav1.DeleteOptions{}); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+			fmt.Fprintf(os.Stderr, "Application hook: delete APIService %q (backend in ns %q): %v\n", name, helmNamespace, err)
+			continue
+		}
+		fmt.Printf("Application hook: deleted APIService %q (backend Service %q in namespace %q)\n", name, k8sconsts.AutoScalerWebhookServiceName, helmNamespace)
+	}
 }
 
 func processApplicationIfStuckOnShutdown(ctx context.Context, appClient crclient.Client, k8sConfig *rest.Config, clientset kubernetes.Interface, app *appv1beta1.Application, helmNamespace string, installerDeploymentDeleting bool) {
@@ -294,13 +348,15 @@ func handleApplicationDeletion(ctx context.Context, appCli crclient.Client, k8sC
 
 	helmNSTerm, helmNSWhy := namespaceSuggestsSIGTERMReasonTeardown(ctx, clientset, helmNamespace)
 	if helmNSTerm {
-		fmt.Printf("Application hook: Helm namespace %q %s — skipping helm uninstall; removing Application finalizer only (namespaced resources are being torn down; cluster-scoped objects may need manual cleanup)\n", helmNamespace, helmNSWhy)
+		fmt.Printf("Application hook: Helm namespace %q %s — skipping helm uninstall; deleting aggregated APIServices backed by that namespace, then Application finalizer\n", helmNamespace, helmNSWhy)
+		deleteAggregatedAPIServicesForHelmReleaseNamespace(ctx, k8sConfig, helmNamespace)
 		return removeApplicationFinalizer(ctx, appCli, app.Namespace, app.Name)
 	}
 
 	if err := helmUninstallOdigos(k8sConfig, helmNamespace); err != nil {
 		if helmUninstallFailedBecauseNamespaceTerminating(err) {
-			fmt.Fprintf(os.Stderr, "Application hook: helm uninstall failed while namespace is terminating (%v); removing Application finalizer only\n", err)
+			fmt.Fprintf(os.Stderr, "Application hook: helm uninstall failed while namespace is terminating (%v); deleting aggregated APIServices backed by %q, then Application finalizer\n", err, helmNamespace)
+			deleteAggregatedAPIServicesForHelmReleaseNamespace(ctx, k8sConfig, helmNamespace)
 			return removeApplicationFinalizer(ctx, appCli, app.Namespace, app.Name)
 		}
 		return fmt.Errorf("helm uninstall: %w", err)
