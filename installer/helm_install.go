@@ -146,6 +146,10 @@ func buildHelmValues(details *autodetect.ClusterDetails, onPremToken, imageTag s
 	openshiftEnabled := details != nil && details.Kind == autodetect.KindOpenShift
 	vals["openshift"] = map[string]interface{}{"enabled": openshiftEnabled}
 
+	// GKE: avoid system-node-critical/system-cluster-critical PriorityClass on DaemonSets (default quota often blocks it).
+	gkeEnabled := details != nil && details.Kind == autodetect.KindGKE
+	vals["gke"] = map[string]interface{}{"enabled": gkeEnabled}
+
 	if img := marketplaceImageOverrides(odigosTier == common.CommunityOdigosTier); len(img) > 0 {
 		vals["images"] = img
 	}
