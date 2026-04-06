@@ -96,7 +96,7 @@ properties:
             - apiGroups: ['operator.odigos.io']
               resources: ['*']
               verbs: ['*']
-            # Application CR (informer + SIGTERM; shutdown uses GCP Deployment→Application owner ref)
+            # Application CR (installer adds/removes uninstall finalizer; informer + SIGTERM; Deployment→Application owner ref)
             - apiGroups: ['app.k8s.io']
               resources: ['applications']
               verbs: ['get', 'list', 'watch', 'patch', 'update']

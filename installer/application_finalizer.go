@@ -58,6 +58,73 @@ func applicationOwnerRefFromDeployment(dep *appsv1.Deployment) *metav1.OwnerRefe
 	return nil
 }
 
+const ownerRefWaitAttempts = 24
+const ownerRefWaitInterval = 5 * time.Second
+
+// ensureApplicationFinalizerFromInstallerDeployment adds applicationFinalizer only to the Application identified by
+// the installer Deployment's ownerReference (same transitive link used for removal). Retries if the ownerReference
+// is not set yet (Marketplace ordering).
+func ensureApplicationFinalizerFromInstallerDeployment(ctx context.Context, k8sConfig *rest.Config, clientset kubernetes.Interface, deployNs, deployName string) error {
+	appClient, err := applicationClient(k8sConfig)
+	if err != nil {
+		return fmt.Errorf("application client: %w", err)
+	}
+	for attempt := 1; attempt <= ownerRefWaitAttempts; attempt++ {
+		dep, err := clientset.AppsV1().Deployments(deployNs).Get(ctx, deployName, metav1.GetOptions{})
+		if err != nil {
+			return fmt.Errorf("get installer Deployment %s/%s: %w", deployNs, deployName, err)
+		}
+		ref := applicationOwnerRefFromDeployment(dep)
+		if ref == nil {
+			fmt.Printf("Installer: waiting for app.k8s.io Application ownerReference on Deployment %s/%s (attempt %d/%d)...\n",
+				deployNs, deployName, attempt, ownerRefWaitAttempts)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(ownerRefWaitInterval):
+			}
+			continue
+		}
+		key := crclient.ObjectKey{Namespace: dep.Namespace, Name: ref.Name}
+		var app appv1beta1.Application
+		if err := appClient.Get(ctx, key, &app); err != nil {
+			return fmt.Errorf("get Application %s/%s from Deployment owner ref: %w", key.Namespace, key.Name, err)
+		}
+		if app.UID != ref.UID {
+			return fmt.Errorf("Application %s/%s UID %s does not match Deployment ownerReference UID %s",
+				app.Namespace, app.Name, app.UID, ref.UID)
+		}
+		return addApplicationFinalizer(ctx, appClient, key.Namespace, key.Name)
+	}
+	return fmt.Errorf("timed out waiting for Application ownerReference on Deployment %s/%s (%d attempts, %v apart)",
+		deployNs, deployName, ownerRefWaitAttempts, ownerRefWaitInterval)
+}
+
+func addApplicationFinalizer(ctx context.Context, appClient crclient.Client, namespace, name string) error {
+	key := crclient.ObjectKey{Namespace: namespace, Name: name}
+	for attempt := 0; attempt < 5; attempt++ {
+		var app appv1beta1.Application
+		if err := appClient.Get(ctx, key, &app); err != nil {
+			return fmt.Errorf("get Application: %w", err)
+		}
+		if controllerutil.ContainsFinalizer(&app, applicationFinalizer) {
+			fmt.Printf("Installer: Application %s/%s already has finalizer %q\n", namespace, name, applicationFinalizer)
+			return nil
+		}
+		orig := app.DeepCopy()
+		controllerutil.AddFinalizer(&app, applicationFinalizer)
+		if err := appClient.Patch(ctx, &app, crclient.MergeFrom(orig)); err != nil {
+			if apierrors.IsConflict(err) {
+				continue
+			}
+			return fmt.Errorf("patch Application finalizers: %w", err)
+		}
+		fmt.Printf("Installer: added finalizer %q to Application %s/%s\n", applicationFinalizer, namespace, name)
+		return nil
+	}
+	return fmt.Errorf("patch Application finalizers: too many conflicts")
+}
+
 // namespaceSuggestsSIGTERMReasonTeardown returns true when the Application's namespace is terminating or already
 // gone. During namespace deletion the API server often SIGTERMs pods before the Application object has
 // metadata.deletionTimestamp set, so we use Namespace.Status.Phase as an additional signal on shutdown only.

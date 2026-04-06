@@ -113,6 +113,14 @@ func main() {
 		os.Exit(1)
 	}
 
+	if odigosInstallerName != "" && odigosInstallerNamespace != "" {
+		fmt.Println("Adding Application uninstall finalizer (Application from installer Deployment ownerReference only)")
+		if err := ensureApplicationFinalizerFromInstallerDeployment(ctx, k8sConfig, clientset, odigosInstallerNamespace, odigosInstallerName); err != nil {
+			fmt.Fprintf(os.Stderr, "ERROR: could not add Application uninstall finalizer: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
 	fmt.Println("Odigos installation completed successfully")
 
 	watchCtx, watchCancel := context.WithCancel(context.Background())
