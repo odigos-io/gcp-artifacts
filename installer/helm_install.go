@@ -183,14 +183,13 @@ func marketplaceImageOverrides(community bool) map[string]interface{} {
 		}
 	} else {
 		add("enterprise-instrumentor", os.Getenv("ODIGOS_ENTERPRISE_INSTRUMENTOR_IMAGE"))
-		entOdiglet := os.Getenv("ODIGOS_ENTERPRISE_ODIGLET_IMAGE")
-		entInit := os.Getenv("ODIGOS_ENTERPRISE_INIT_CONTAINER_IMAGE")
-		switch {
-		case entInit != "":
-			add("enterprise-odiglet", entInit)
-			add("enterprise-agents", entInit)
-		case entOdiglet != "":
-			add("enterprise-odiglet", entOdiglet)
+		// enterprise-agents = instrumentation bundle (init/agent image). enterprise-odiglet = odiglet binary
+		// (/root/odiglet). Do not map init/agents image onto enterprise-odiglet or the daemonset init container breaks.
+		if v := os.Getenv("ODIGOS_ENTERPRISE_INIT_CONTAINER_IMAGE"); v != "" {
+			add("enterprise-agents", v)
+		}
+		if v := os.Getenv("ODIGOS_ENTERPRISE_ODIGLET_IMAGE"); v != "" {
+			add("enterprise-odiglet", v)
 		}
 	}
 
