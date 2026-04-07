@@ -21,27 +21,6 @@ spec:
   # Uninstall: installer adds finalizer on Application (via Deployment owner ref); informer + SIGTERM remove it.
   # https://docs.cloud.google.com/marketplace/docs/partners/kubernetes/create-app-package
   componentKinds:
-  # actions.odigos.io (CRDs from chart)
-  - group: actions.odigos.io
-    kind: AddClusterInfo
-  - group: actions.odigos.io
-    kind: DeleteAttribute
-  - group: actions.odigos.io
-    kind: ErrorSampler
-  - group: actions.odigos.io
-    kind: K8sAttributesResolver
-  - group: actions.odigos.io
-    kind: LatencySampler
-  - group: actions.odigos.io
-    kind: PiiMasking
-  - group: actions.odigos.io
-    kind: ProbabilisticSampler
-  - group: actions.odigos.io
-    kind: RenameAttribute
-  - group: actions.odigos.io
-    kind: ServiceNameSampler
-  - group: actions.odigos.io
-    kind: SpanAttributeSampler
   # admission / webhooks
   - group: admissionregistration.k8s.io
     kind: MutatingWebhookConfiguration
@@ -57,25 +36,6 @@ spec:
     kind: HorizontalPodAutoscaler
   - group: batch
     kind: Job
-  # odigos.io (CRDs + user-facing CR instances labeled as system objects)
-  - group: odigos.io
-    kind: Action
-  - group: odigos.io
-    kind: CollectorsGroup
-  - group: odigos.io
-    kind: Destination
-  - group: odigos.io
-    kind: InstrumentationConfig
-  - group: odigos.io
-    kind: InstrumentationInstance
-  - group: odigos.io
-    kind: InstrumentationRule
-  - group: odigos.io
-    kind: Processor
-  - group: odigos.io
-    kind: Sampling
-  - group: odigos.io
-    kind: Source
   - group: policy
     kind: PodDisruptionBudget
   - group: rbac.authorization.k8s.io
