@@ -159,10 +159,11 @@ properties:
               resources: ['podsecuritypolicies']
               resourceNames: ['privileged']
               verbs: ['use']
-            # Webhook configurations
+            # Admission webhooks (Odigos instrumentor/autoscaler) + mpdev verify cleanup / discovery.
+            # Broad rule avoids Forbidden on list (e.g. mutatingwebhookconfigurations) on newer clusters.
             - apiGroups: ['admissionregistration.k8s.io']
-              resources: ['mutatingwebhookconfigurations', 'validatingwebhookconfigurations']
-              verbs: ['get', 'list', 'watch', 'create', 'update', 'patch', 'delete']
+              resources: ['*']
+              verbs: ['*']
             # Aggregated APIServices (e.g. custom.metrics from Odigos chart): delete when release ns is terminating
             # so namespace deletion is not blocked by NamespaceDeletionDiscoveryFailure.
             - apiGroups: ['apiregistration.k8s.io']
