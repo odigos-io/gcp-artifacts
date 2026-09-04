@@ -13,7 +13,7 @@ metadata:
 spec:
   descriptor:
     type: odigos
-    version: '1.25.1'
+    version: '1.35.3'
   selector:
     matchLabels:
       odigos.io/system-object: "true"
