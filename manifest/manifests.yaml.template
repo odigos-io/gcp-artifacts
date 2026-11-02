@@ -65,7 +65,7 @@ spec:
             - name: ODIGOS_NAMESPACE
               value: "$namespace"
             - name: ODIGOS_VERSION
-              value: "1.25.1"
+              value: "1.39.0"
             - name: ODIGOS_AUTOSCALER_IMAGE
               value: "$autoscalerImageFull"
             - name: ODIGOS_COLLECTOR_IMAGE
@@ -80,6 +80,8 @@ spec:
               value: "$odigletImageFull"
             - name: ODIGOS_UI_IMAGE
               value: "$uiImageFull"
+            - name: ODIGOS_CLI_IMAGE
+              value: "$cliImageFull"
             - name: ODIGOS_INSTALLER_NAME
               value: "$name"
             - name: ODIGOS_INSTALLER_NAMESPACE
@@ -90,6 +92,10 @@ spec:
               value: "$enterpriseInstrumentorImageFull"
             - name: ODIGOS_ENTERPRISE_INIT_CONTAINER_IMAGE
               value: "$enterpriseInitContainerImageFull"
+            - name: ODIGOS_ENTERPRISE_COLLECTOR_IMAGE
+              value: "$enterpriseCollectorImageFull"
+            - name: ODIGOS_ENTERPRISE_UI_IMAGE
+              value: "$enterpriseUiImageFull"
             - name: ODIGOS_ON_PREM_TOKEN
               value: "$onPremToken"
             - name: AGENT_LOCAL_PORT

@@ -174,6 +174,8 @@ func marketplaceImageOverrides(community bool) map[string]interface{} {
 	add("collector", os.Getenv("ODIGOS_COLLECTOR_IMAGE"))
 	add("scheduler", os.Getenv("ODIGOS_SCHEDULER_IMAGE"))
 	add("ui", os.Getenv("ODIGOS_UI_IMAGE"))
+	// cli runs the chart's cleanup hook in both tiers
+	add("cli", os.Getenv("ODIGOS_CLI_IMAGE"))
 
 	if community {
 		add("instrumentor", os.Getenv("ODIGOS_INSTRUMENTOR_IMAGE"))
@@ -183,6 +185,9 @@ func marketplaceImageOverrides(community bool) map[string]interface{} {
 		}
 	} else {
 		add("enterprise-instrumentor", os.Getenv("ODIGOS_ENTERPRISE_INSTRUMENTOR_IMAGE"))
+		// Enterprise installs read these instead of collector/ui (data-collection collector and UI deployment)
+		add("enterprise-collector", os.Getenv("ODIGOS_ENTERPRISE_COLLECTOR_IMAGE"))
+		add("enterprise-ui", os.Getenv("ODIGOS_ENTERPRISE_UI_IMAGE"))
 		// enterprise-agents = instrumentation bundle (init/agent image). enterprise-odiglet = odiglet binary
 		// (/root/odiglet). Do not map init/agents image onto enterprise-odiglet or the daemonset init container breaks.
 		if v := os.Getenv("ODIGOS_ENTERPRISE_INIT_CONTAINER_IMAGE"); v != "" {

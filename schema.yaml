@@ -4,7 +4,7 @@ x-google-marketplace:
   applicationApiVersion: v1beta1
   # The published version is required and MUST match the tag
   # of the deployer image
-  publishedVersion: '1.25.1'
+  publishedVersion: '1.39.0'
   publishedVersionMetadata:
     releaseNote: >-
       Odigos is a platform for tracing and observability.
@@ -53,6 +53,18 @@ x-google-marketplace:
     odigos-enterprise-instrumentor:
       properties:
         enterpriseInstrumentorImageFull:
+          type: FULL
+    odigos-cli:
+      properties:
+        cliImageFull:
+          type: FULL
+    odigos-enterprise-collector:
+      properties:
+        enterpriseCollectorImageFull:
+          type: FULL
+    odigos-enterprise-ui:
+      properties:
+        enterpriseUiImageFull:
           type: FULL
 
 properties:

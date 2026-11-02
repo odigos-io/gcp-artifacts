@@ -1,13 +1,16 @@
 # Variables
 ORG ?= gcr.io/odigos-public
 IMAGE_NAME = odigos
-TAG ?= 1.25.1
+TAG ?= 1.39.0
 # Chart version from https://odigos-io.github.io/odigos/ (must exist for `helm pull`); keep in sync with TAG
 CHART_VERSION ?= $(TAG)
+# Marketplace requires every image to also carry the minor-version track tag (e.g. 1.39 for 1.39.0)
+TRACK = $(basename $(TAG))
 PLATFORMS = linux/amd64,linux/arm64
 
 # Full image reference
 IMAGE = $(ORG)/$(IMAGE_NAME):$(TAG)
+TRACK_IMAGE = $(ORG)/$(IMAGE_NAME):$(TRACK)
 
 .PHONY: vendor-helm-chart
 vendor-helm-chart:
@@ -22,6 +25,7 @@ push-image:
 		--platform $(PLATFORMS) \
 		--build-arg CHART_VERSION=$(CHART_VERSION) \
 		--tag $(IMAGE) \
+		--tag $(TRACK_IMAGE) \
 		--push \
 		--annotation "index:com.googleapis.cloudmarketplace.product.service.name=services/odigos.endpoints.odigos-public.cloud.goog" \
 		.

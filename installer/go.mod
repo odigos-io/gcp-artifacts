@@ -1,6 +1,6 @@
 module github.com/odigos-io/odigos/gcp-artifacts/installer
 
-go 1.26.2
+go 1.26.9
 
 require (
 	github.com/odigos-io/odigos/api v1.23.0
