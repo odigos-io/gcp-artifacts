@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/odigos-io/odigos/cli/pkg/autodetect"
-	"github.com/odigos-io/odigos/common"
 	"helm.sh/helm/v3/pkg/action"
 	"helm.sh/helm/v3/pkg/chart/loader"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -136,7 +135,7 @@ func helmUninstallOdigos(config *rest.Config, namespace string) error {
 	return runHelmUninstall(actionConfig, helmReleaseName)
 }
 
-func buildHelmValues(details *autodetect.ClusterDetails, onPremToken, imageTag string, odigosTier common.OdigosTier) map[string]interface{} {
+func buildHelmValues(details *autodetect.ClusterDetails, onPremToken, imageTag string) map[string]interface{} {
 	vals := make(map[string]interface{})
 
 	if onPremToken != "" && onPremToken != "$onPremToken" {
@@ -150,7 +149,7 @@ func buildHelmValues(details *autodetect.ClusterDetails, onPremToken, imageTag s
 	gkeEnabled := details != nil && details.Kind == autodetect.KindGKE
 	vals["gke"] = map[string]interface{}{"enabled": gkeEnabled}
 
-	if img := marketplaceImageOverrides(odigosTier == common.CommunityOdigosTier); len(img) > 0 {
+	if img := marketplaceImageOverrides(); len(img) > 0 {
 		vals["images"] = img
 	}
 
@@ -161,7 +160,7 @@ func buildHelmValues(details *autodetect.ClusterDetails, onPremToken, imageTag s
 	return vals
 }
 
-func marketplaceImageOverrides(community bool) map[string]interface{} {
+func marketplaceImageOverrides() map[string]interface{} {
 	images := make(map[string]interface{})
 	add := func(component, val string) {
 		if val == "" || val == "$onPremToken" || strings.HasPrefix(val, "$") {
@@ -170,33 +169,18 @@ func marketplaceImageOverrides(community bool) map[string]interface{} {
 		images[component] = val
 	}
 
+	// Since Odigos 1.40 the chart always deploys the enterprise images (there is no community tier),
+	// plus cli (cleanup hook) and the autoscaler/scheduler compatibility stubs.
 	add("autoscaler", os.Getenv("ODIGOS_AUTOSCALER_IMAGE"))
-	add("collector", os.Getenv("ODIGOS_COLLECTOR_IMAGE"))
 	add("scheduler", os.Getenv("ODIGOS_SCHEDULER_IMAGE"))
-	add("ui", os.Getenv("ODIGOS_UI_IMAGE"))
-	// cli runs the chart's cleanup hook in both tiers
 	add("cli", os.Getenv("ODIGOS_CLI_IMAGE"))
-
-	if community {
-		add("instrumentor", os.Getenv("ODIGOS_INSTRUMENTOR_IMAGE"))
-		add("odiglet", os.Getenv("ODIGOS_ODIGLET_IMAGE"))
-		if v := os.Getenv("ODIGOS_INIT_CONTAINER_IMAGE"); v != "" {
-			add("agents", v)
-		}
-	} else {
-		add("enterprise-instrumentor", os.Getenv("ODIGOS_ENTERPRISE_INSTRUMENTOR_IMAGE"))
-		// Enterprise installs read these instead of collector/ui (data-collection collector and UI deployment)
-		add("enterprise-collector", os.Getenv("ODIGOS_ENTERPRISE_COLLECTOR_IMAGE"))
-		add("enterprise-ui", os.Getenv("ODIGOS_ENTERPRISE_UI_IMAGE"))
-		// enterprise-agents = instrumentation bundle (init/agent image). enterprise-odiglet = odiglet binary
-		// (/root/odiglet). Do not map init/agents image onto enterprise-odiglet or the daemonset init container breaks.
-		if v := os.Getenv("ODIGOS_ENTERPRISE_INIT_CONTAINER_IMAGE"); v != "" {
-			add("enterprise-agents", v)
-		}
-		if v := os.Getenv("ODIGOS_ENTERPRISE_ODIGLET_IMAGE"); v != "" {
-			add("enterprise-odiglet", v)
-		}
-	}
+	add("enterprise-instrumentor", os.Getenv("ODIGOS_ENTERPRISE_INSTRUMENTOR_IMAGE"))
+	add("enterprise-collector", os.Getenv("ODIGOS_ENTERPRISE_COLLECTOR_IMAGE"))
+	add("enterprise-ui", os.Getenv("ODIGOS_ENTERPRISE_UI_IMAGE"))
+	// enterprise-agents = instrumentation bundle (init/agent image). enterprise-odiglet = odiglet binary
+	// (/root/odiglet). Do not map init/agents image onto enterprise-odiglet or the daemonset init container breaks.
+	add("enterprise-agents", os.Getenv("ODIGOS_ENTERPRISE_INIT_CONTAINER_IMAGE"))
+	add("enterprise-odiglet", os.Getenv("ODIGOS_ENTERPRISE_ODIGLET_IMAGE"))
 
 	if len(images) == 0 {
 		return nil

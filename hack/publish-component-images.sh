@@ -5,10 +5,10 @@
 # into $DEST with the Marketplace service-name annotation on the index. The per-platform manifests are the
 # exact official release images; only the top-level index differs.
 #
-# Usage: hack/publish-component-images.sh 1.39.0
+# Usage: hack/publish-component-images.sh 1.40.0
 set -euo pipefail
 
-VERSION="${1:?usage: $0 <version, e.g. 1.39.0>}"
+VERSION="${1:?usage: $0 <version, e.g. 1.40.0>}"
 VERSION="${VERSION#v}"
 TRACK="${VERSION%.*}"
 SRC="${SRC:-registry.odigos.io}"
@@ -17,9 +17,9 @@ SERVICE_NAME="services/odigos.endpoints.odigos-public.cloud.goog"
 
 # Must match the images declared in schema.yaml (x-google-marketplace.images).
 COMPONENTS=(
-  autoscaler collector instrumentor odiglet ui agents scheduler
+  autoscaler scheduler cli
   enterprise-agents enterprise-odiglet enterprise-instrumentor
-  cli enterprise-collector enterprise-ui
+  enterprise-collector enterprise-ui
 )
 
 for c in "${COMPONENTS[@]}"; do

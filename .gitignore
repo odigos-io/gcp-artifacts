@@ -4,3 +4,6 @@ go.work.sum
 # Helm chart archive for //go:embed (fetch with `make -C installer vendor-helm-chart`)
 /installer/odigos-chart.tgz
 /installer/helm-chart-odigos-*.tgz
+# Verification-only schema overlay with a real token (`make data-test`); never commit
+/data-test/
+/installer/installer

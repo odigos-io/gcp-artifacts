@@ -21,7 +21,6 @@ import (
 
 	"github.com/odigos-io/odigos/cli/pkg/autodetect"
 	"github.com/odigos-io/odigos/cli/pkg/kube"
-	"github.com/odigos-io/odigos/common"
 	"github.com/odigos-io/odigos/common/consts"
 )
 
@@ -72,9 +71,11 @@ func main() {
 
 	ns := os.Getenv("ODIGOS_NAMESPACE")
 	onPremToken := os.Getenv("ODIGOS_ON_PREM_TOKEN")
-	odigosTier := common.CommunityOdigosTier
-	if onPremToken != "" && onPremToken != "$onPremToken" {
-		odigosTier = common.OnPremOdigosTier
+	if onPremToken == "" || onPremToken == "$onPremToken" {
+		// Since Odigos 1.40 the odiglet, instrumentor and UI read the odigos-pro secret, which the chart
+		// only creates from onPremToken; installing without it leaves those pods unable to start.
+		fmt.Fprintln(os.Stderr, "ERROR: onPremToken is required (ODIGOS_ON_PREM_TOKEN is empty)")
+		os.Exit(1)
 	}
 
 	version := os.Getenv(consts.OdigosVersionEnvVarName)
@@ -90,7 +91,7 @@ func main() {
 		imageTag = "v" + imageTag
 	}
 
-	vals := buildHelmValues(details, onPremToken, imageTag, odigosTier)
+	vals := buildHelmValues(details, onPremToken, imageTag)
 
 	odigosInstallerName := os.Getenv("ODIGOS_INSTALLER_NAME")
 	odigosInstallerNamespace := os.Getenv("ODIGOS_INSTALLER_NAMESPACE")

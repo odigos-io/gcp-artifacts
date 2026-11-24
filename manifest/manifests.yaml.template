@@ -65,21 +65,11 @@ spec:
             - name: ODIGOS_NAMESPACE
               value: "$namespace"
             - name: ODIGOS_VERSION
-              value: "1.39.0"
+              value: "1.40.0"
             - name: ODIGOS_AUTOSCALER_IMAGE
               value: "$autoscalerImageFull"
-            - name: ODIGOS_COLLECTOR_IMAGE
-              value: "$collectorImageFull"
-            - name: ODIGOS_INIT_CONTAINER_IMAGE
-              value: "$initContainerImageFull"
             - name: ODIGOS_SCHEDULER_IMAGE
               value: "$schedulerImageFull"
-            - name: ODIGOS_INSTRUMENTOR_IMAGE
-              value: "$instrumentorImageFull"
-            - name: ODIGOS_ODIGLET_IMAGE
-              value: "$odigletImageFull"
-            - name: ODIGOS_UI_IMAGE
-              value: "$uiImageFull"
             - name: ODIGOS_CLI_IMAGE
               value: "$cliImageFull"
             - name: ODIGOS_INSTALLER_NAME

@@ -4,7 +4,7 @@ x-google-marketplace:
   applicationApiVersion: v1beta1
   # The published version is required and MUST match the tag
   # of the deployer image
-  publishedVersion: '1.39.0'
+  publishedVersion: '1.40.0'
   publishedVersionMetadata:
     releaseNote: >-
       Odigos is a platform for tracing and observability.
@@ -14,10 +14,6 @@ x-google-marketplace:
       properties:
         imageFull:
           type: FULL
-    odigos-agents:
-      properties:
-        initContainerImageFull:
-          type: FULL
     odigos-enterprise-agents:
       properties:
         enterpriseInitContainerImageFull:
@@ -26,25 +22,9 @@ x-google-marketplace:
       properties:
         schedulerImageFull:
           type: FULL
-    odigos-instrumentor:
-      properties:
-        instrumentorImageFull:
-          type: FULL
-    odigos-odiglet:
-      properties:
-        odigletImageFull:
-          type: FULL
-    odigos-ui:
-      properties:
-        uiImageFull:
-          type: FULL
     odigos-autoscaler:
       properties:
         autoscalerImageFull:
-          type: FULL
-    odigos-collector:
-      properties:
-        collectorImageFull:
           type: FULL
     odigos-enterprise-odiglet:
       properties:
@@ -76,8 +56,15 @@ properties:
     type: string
     x-google-marketplace:
       type: NAMESPACE
+  # Required since Odigos 1.40: every install runs the enterprise components, which read this token.
   onPremToken:
     type: string
+    title: Odigos on-prem token
+    description: >-
+      Your Odigos on-prem license token. Odigos components do not start without it.
+      Contact Odigos (https://odigos.io) to get one.
+    x-google-marketplace:
+      type: MASKED_FIELD
   reportingSecret:
     type: string
     x-google-marketplace:
@@ -202,3 +189,4 @@ required:
 - name
 - namespace
 - reportingSecret
+- onPremToken

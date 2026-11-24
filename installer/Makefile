@@ -1,10 +1,10 @@
 # Variables
 ORG ?= gcr.io/odigos-public
 IMAGE_NAME = odigos
-TAG ?= 1.39.0
-# Chart version from https://odigos-io.github.io/odigos/ (must exist for `helm pull`); keep in sync with TAG
+TAG ?= 1.40.0
+# Chart version from oci://registry.odigos.io/charts/odigos (must exist for `helm pull`); keep in sync with TAG
 CHART_VERSION ?= $(TAG)
-# Marketplace requires every image to also carry the minor-version track tag (e.g. 1.39 for 1.39.0)
+# Marketplace requires every image to also carry the minor-version track tag (e.g. 1.40 for 1.40.0)
 TRACK = $(basename $(TAG))
 PLATFORMS = linux/amd64,linux/arm64
 
@@ -14,10 +14,8 @@ TRACK_IMAGE = $(ORG)/$(IMAGE_NAME):$(TRACK)
 
 .PHONY: vendor-helm-chart
 vendor-helm-chart:
-	helm repo add odigos https://odigos-io.github.io/odigos/ 2>/dev/null || true
-	helm repo update odigos
-	helm pull odigos/odigos --version $(CHART_VERSION) --destination .
-	@f=$$(ls helm-chart-odigos-*.tgz 2>/dev/null | head -1) && mv "$$f" odigos-chart.tgz && echo "Wrote odigos-chart.tgz for local go build"
+	helm pull oci://registry.odigos.io/charts/odigos --version $(CHART_VERSION) --destination .
+	mv odigos-$(CHART_VERSION).tgz odigos-chart.tgz && echo "Wrote odigos-chart.tgz for local go build"
 
 .PHONY: push-image
 push-image:
